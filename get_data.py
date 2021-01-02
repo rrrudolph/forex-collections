@@ -93,6 +93,8 @@ seconds_per_candle = {'1': 60,
 
 
 class UpdateDB():
+    ''' This class has methods to both request data and
+        update the SQLite db '''
 
     def connect_to_db():
         try:
