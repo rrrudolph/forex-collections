@@ -9,17 +9,11 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 
-'''
-Notes: 
-There are 4 sources I get data from. OHLC data comes from Finnhub
-and a local trading terminal (MT5), and the lfd economic data comes
-from Trading Economics. The last source is the calendar from Forex Factory.
-They don't allow webscrapers anymore but you can still access the data
-through Gsheets, so there are some extra steps for that one.
+# This module gets data and updates the database
 
-lfd, hfd = low frequency data, high frequency data
+# Notes: 
+# lfd, hfd = low frequency data, high frequency data
 
-'''
 
 mt5_timeframes = {
                 '1': mt5.TIMEFRAME_M1,
