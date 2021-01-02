@@ -7,11 +7,13 @@ c = conn.cursor()
 
 # Create the FF calendar table
 c.execute("""CREATE TABLE hfd (
-            datetime REAL,
-            name TEXT,
-            actual REAL,
-            forecast REAL,
-            previous REAL
+            date TEXT,
+            time TEXT,
+            ccy TEXT,
+            event TEXT,
+            actual TEXT,
+            forecast TEXT,
+            previous TEXT
             )""")
 
 # Create trading economics data table

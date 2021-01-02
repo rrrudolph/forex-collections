@@ -14,6 +14,8 @@ import datetime as dt
 # Notes: 
 # lfd, hfd = low frequency data, high frequency data
 
+# REMEMBER TO REMOVE THE 'YEAR - 1" PART FROM FFCAL
+
 
 mt5_timeframes = {
                 '1': mt5.TIMEFRAME_M1,
@@ -125,13 +127,15 @@ class UpdateDB():
 
     def save_hfd_to_db(df):
         for i in df.index:
-            params = (   df.loc[i, 'datetime'], 
-                        df.loc[i, 'name'], 
+            params = (  df.loc[i, 'date'], 
+                        df.loc[i, 'time'], 
+                        df.loc[i, 'ccy'], 
+                        df.loc[i, 'event'], 
                         df.loc[i, 'actual'], 
                         df.loc[i, 'forecast'], 
-                        df.loc[i, 'release'])
+                        df.loc[i, 'previous'])
 
-            UpdateDB.c.execute("INSERT INTO ohlc VALUES (?,?,?,?,?)", params)
+            UpdateDB.c.execute("INSERT INTO hfd VALUES (?,?,?,?,?,?,?)", params)
         UpdateDB.conn.commit()
 
     def save_lfd_to_db(df):
@@ -304,7 +308,7 @@ class UpdateDB():
                 df.columns[2]: 'ccy', 
                 df.columns[3]: 'event', 
                 df.columns[4]: 'actual', 
-                df.columns[5]: 'forcast', 
+                df.columns[5]: 'forecast', 
                 df.columns[6]: 'previous', 
                 })
 
@@ -318,9 +322,19 @@ class UpdateDB():
         df = df[df.previous != '']
 
         # Fix the date and add the current year
-        year = dt.date.today().year
+        year = dt.date.today().year -1
         for i in df.index:
-        df.loc[i, 'date'] = df.loc[i, 'date'][3:] + ' ' + str(year)
+            df.loc[i, 'date'] = df.loc[i, 'date'][3:] + ' ' + str(year) 
+
+        # Ensure all data is SQLite friendly
+        UpdateDB.cal_df = df
+        UpdateDB.cal_df['date'] = UpdateDB.cal_df['date'].astype(str)
+        UpdateDB.cal_df['time'] = UpdateDB.cal_df['time'].astype(str)
+        UpdateDB.cal_df['ccy'] = UpdateDB.cal_df['ccy'].astype(str)
+        UpdateDB.cal_df['event'] = UpdateDB.cal_df['event'].astype(str)
+        UpdateDB.cal_df['actual'] = UpdateDB.cal_df['actual'].astype(str)
+        UpdateDB.cal_df['forecast'] = UpdateDB.cal_df['forecast'].astype(str)
+        UpdateDB.cal_df['previous'] = UpdateDB.cal_df['previous'].astype(str)
 
 
 
@@ -329,34 +343,26 @@ def main():
     
     UpdateDB.connect_to_db()
 
-    # # Update Finnhub data (confirmed working 1/1/2021)
-    # for symbol in fin_symbols:
-    #     UpdateDB.finnhub_ohlc_request(symbol, 5)
-    #     UpdateDB.save_ohlc_to_db(UpdateDB.finnhub_df)
+    # Update Finnhub data (confirmed working 1/1/2021)
+    for symbol in fin_symbols:
+        UpdateDB.finnhub_ohlc_request(symbol, 5)
+        UpdateDB.save_ohlc_to_db(UpdateDB.finnhub_df)
 
-    # # Update MT5 data (confirmed working 1/1/2021)
-    # for symbol in mt5_symbols:
-    #     UpdateDB.mt5_ohlc_request(symbol, 5)
-    #     UpdateDB.save_ohlc_to_db(UpdateDB.mt5_df)
+    # Update MT5 data (confirmed working 1/1/2021)
+    for symbol in mt5_symbols:
+        UpdateDB.mt5_ohlc_request(symbol, 5)
+        UpdateDB.save_ohlc_to_db(UpdateDB.mt5_df)
 
-    # Update Trading Economics data (confirmed working 1/1/2021)
+    # Update Forex Factory calendar
+    UpdateDB.ff_hfd_request()
+    UpdateDB.save_hfd_to_db(UpdateDB.cal_df)
+
+    # Update Trading Economics data 
     for country in te_countries:
-        UpdateDB.te_lfd_request(country)
+        UpdateDB.te_hfd_request(country)
         UpdateDB.save_lfd_to_db(UpdateDB.te_df)
         # Getting error: "sqlite3.InterfaceError: Error binding parameter 0 - probably unsupported type."
         # Even though I've explicitly set all of the data types...
 main()
-
-
-# UpdateDB.connect_to_db()
-# df = pd.read_sql_query("SELECT * from ohlc WHERE symbol = 'MOO'", UpdateDB.conn)
-# print(df)
-# UpdateDB.finnhub_ohlc_request('MOO', 5)
-
-
-# UpdateDB.finnhub_df
-    # if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
-    #     print("initialize() failed, error code =", mt5.last_error())
-    #     quit()
 
 
