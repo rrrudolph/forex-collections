@@ -3,12 +3,22 @@ import MetaTrader5 as mt5
 import sqlite3
 import time
 import requests
-'''
-The way this module will work is it will have 4 different servers
-to request data from. OHLCV data will come from MT5 and Finnhub,
-economic data will come from Forex Factory and Trading Economics.
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
+import numpy as np
+import datetime as dt
 
-I'll request M5 ohlc data.
+'''
+Notes: 
+There are 4 sources I get data from. OHLC data comes from Finnhub
+and a local trading terminal (MT5), and the lfd economic data comes
+from Trading Economics. The last source is the calendar from Forex Factory.
+They don't allow webscrapers anymore but you can still access the data
+through Gsheets, so there are some extra steps for that one.
+
+lfd, hfd = low frequency data, high frequency data
+
 '''
 
 mt5_timeframes = {
@@ -277,6 +287,48 @@ class UpdateDB():
         UpdateDB.te_df['range'] = UpdateDB.te_df['range'].astype(str)
         UpdateDB.te_df['frequency'] = UpdateDB.te_df['frequency'].astype(str)
 
+    def ff_hfd_request():
+        # use creds to create a client to interact with the Google Drive API
+        scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(r'C:\Users\Rudy\Desktop\codez\client_secret.json', scope)
+        client = gspread.authorize(creds)
+
+        # Find a workbook by name and open the first sheet
+        sheet = client.open("ffcal").sheet1
+
+        # Extract and print all of the values
+        data = sheet.get_all_records()
+
+        # Clean data cuz its super ugly
+        df = pd.DataFrame(data)
+        df = df[1:]
+        df = df.rename(str.lower, axis='columns')
+        df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
+        df = df.rename(columns = {
+                df.columns[0]: 'date', 
+                df.columns[1]: 'time', 
+                df.columns[2]: 'ccy', 
+                df.columns[3]: 'event', 
+                df.columns[4]: 'actual', 
+                df.columns[5]: 'forcast', 
+                df.columns[6]: 'previous', 
+                })
+
+        # Convert blanks to nans and then fill               
+        df.date[df.date == ''] = np.nan
+        df.date = df.date.fillna(method='ffill')
+
+        # Remove rows without data
+        df = df[df.actual != 'Bank Holiday']
+        df = df[df.time != '[TABLE]']
+        df = df[df.previous != '']
+
+        # Fix the date and add the current year
+        year = dt.date.today().year
+        for i in df.index:
+        df.loc[i, 'date'] = df.loc[i, 'date'][3:] + ' ' + str(year)
+
+
 
 def main():        
     ''' Open the db connection, update the data '''
@@ -297,7 +349,8 @@ def main():
     for country in te_countries:
         UpdateDB.te_lfd_request(country)
         UpdateDB.save_lfd_to_db(UpdateDB.te_df)
-
+        # Getting error: "sqlite3.InterfaceError: Error binding parameter 0 - probably unsupported type."
+        # Even though I've explicitly set all of the data types...
 main()
 
 
