@@ -5,7 +5,6 @@ import time
 import requests
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import pandas as pd
 import numpy as np
 import datetime as dt
 import ohlc_symbols
@@ -13,18 +12,16 @@ import ohlc_symbols
 # This module gets data and updates the database
 
 # Notes: 
-# lfd, hfd = low frequency data, high frequency data
+# lfd = low frequency data
 
 # ~~~~~~~~~~~~~~~~~  TO DO:  ~~~~~~~~~~~~~~~~~~
-# REMEMBER TO REMOVE THE 'YEAR - 1" PART FROM FFCAL
-# 
-# Add some condition that will only save calendar data 
-# when needed.  It should overwrite rows that are missing
-# data in the forecast or previous columns.
-# match by date, time, ccy, event
-#
-# Add some time randomization to the TE request so I
-# don't get flagged as being a bot
+''' REMEMBER TO REMOVE THE 'YEAR - 1" PART FROM FFCAL
+
+I need to work with the ff cal data locally throughout the week and
+only update the db on the weekend once the 'actuals' are locked in. 
+
+Add some time randomization to the TE request so I
+don't get flagged as being a bot '''
 
 
 class UpdateDB():
@@ -51,10 +48,10 @@ class UpdateDB():
                         df.loc[i, 'close'], 
                         df.loc[i, 'volume'])
 
-            UpdateDB.c.execute("INSERT INTO ohlc VALUES (?,?,?,?,?,?,?,?)", params)
+            UpdateDB.c.execute("INSERT INTO ohlc_raw VALUES (?,?,?,?,?,?,?,?)", params)
         UpdateDB.conn.commit()
 
-    def save_hfd_to_db(df):
+    def save_cal_to_db(df):
         for i in df.index:
             params = (  df.loc[i, 'date'], 
                         df.loc[i, 'time'], 
@@ -64,10 +61,10 @@ class UpdateDB():
                         df.loc[i, 'forecast'], 
                         df.loc[i, 'previous'])
 
-            UpdateDB.c.execute("INSERT INTO hfd VALUES (?,?,?,?,?,?,?)", params)
+            UpdateDB.c.execute("INSERT INTO ff_cal_raw VALUES (?,?,?,?,?,?,?)", params)
         UpdateDB.conn.commit()
 
-    def save_lfd_to_db(df):
+    def save_te_data_to_db(df):
         for i in df.index:
             params = (  df.loc[i, 'country'], 
                         df.loc[i, 'date'], 
@@ -78,7 +75,7 @@ class UpdateDB():
                         df.loc[i, 'range'], 
                         df.loc[i, 'frequency'])
 
-            UpdateDB.c.execute("INSERT INTO lfd VALUES (?,?,?,?,?,?,?,?)", params)
+            UpdateDB.c.execute("INSERT INTO te_data_raw VALUES (?,?,?,?,?,?,?,?)", params)
         UpdateDB.conn.commit()
 
     def _get_latest_ohlc_datetime(symbol, timeframe):
@@ -109,7 +106,7 @@ class UpdateDB():
         if UpdateDB._get_latest_ohlc_datetime(symbol, timeframe):
             UpdateDB.start = UpdateDB._get_latest_ohlc_datetime(symbol, timeframe)
         else: 
-            UpdateDB.start = UpdateDB.end - (num_candles * seconds_per_candle[timeframe])
+            UpdateDB.start = UpdateDB.end - (num_candles * ohlc_symbols.seconds_per_candle[timeframe])
 
         return UpdateDB.start, UpdateDB.end
 
@@ -182,7 +179,7 @@ class UpdateDB():
         UpdateDB.mt5_df['close'] = UpdateDB.mt5_df['close'].astype(float)
         UpdateDB.mt5_df['volume'] = UpdateDB.mt5_df['volume'].astype(float)
 
-    def te_lfd_request(country):
+    def te_request(country):
         ''' Open each country's indicators web page '''
 
         # This returns a list of df's
@@ -236,7 +233,7 @@ class UpdateDB():
         UpdateDB.te_df = UpdateDB.te_df.dropna(axis=1)
         UpdateDB.te_df = UpdateDB.te_df.reset_index(drop=True)
 
-    def ff_hfd_request():
+    def ff_cal_request():
         # use creds to create a client to interact with the Google Drive API
         scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name(r'C:\Users\Rudy\Desktop\codez\client_secret.json', scope)
@@ -304,11 +301,13 @@ def main():
 
     # Update Trading Economics data 
     for country in ohlc_symbols.te_countries:
-        UpdateDB.te_lfd_request(country)
-        UpdateDB.save_lfd_to_db(UpdateDB.te_df)
+        UpdateDB.te_request(country)
+        UpdateDB.save_te_data_to_db(UpdateDB.te_df)
 
     # Update Forex Factory calendar
-    UpdateDB.ff_hfd_request()
-    UpdateDB.save_hfd_to_db(UpdateDB.cal_df)
+    UpdateDB.ff_cal_request()
+    UpdateDB.save_cal_to_db(UpdateDB.cal_df)
+
+    UpdateDB.conn.close()
 
 main()
