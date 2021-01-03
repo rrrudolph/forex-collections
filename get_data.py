@@ -8,94 +8,23 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import numpy as np
 import datetime as dt
+import ohlc_symbols
 
 # This module gets data and updates the database
 
 # Notes: 
 # lfd, hfd = low frequency data, high frequency data
 
+# ~~~~~~~~~~~~~~~~~  TO DO:  ~~~~~~~~~~~~~~~~~~
 # REMEMBER TO REMOVE THE 'YEAR - 1" PART FROM FFCAL
-
-
-mt5_timeframes = {
-                '1': mt5.TIMEFRAME_M1,
-                '5': mt5.TIMEFRAME_M5,
-                '15': mt5.TIMEFRAME_M15
-                }
-
-mt5_symbols = [
-    'EURUSD',
-    'GBPUSD',
-    'USDJPY',
-    'NZDUSD',
-    'USDCAD',
-    'AUDUSD',
-    'EURJPY',
-    'GBPJPY',
-    'CADJPY',
-    'AUDJPY',
-    'NZDJPY',
-    'EURCAD',
-    'EURAUD',
-    'GBPCAD',
-    'EURGBP',
-    'AUDCAD',
-    'NZDCAD',
-    'AUDNZD',
-    'GBPAUD',
-    'GBPNZD',
-    'EURNZD',
-    'USDCHF',
-    'GBPCHF',
-    'CADCHF',
-    'USDPLN',
-    'USDSEK',
-    'USDMXN',
-    'USDZAR',
-    'GBPSGD',
-    'USDZAR',
-    'XAUUSD',
-    'XAGUSD',
-    'XTIUSD',
-    'DE30',
-    'US30',
-    'US500',
-    'USTEC'
-]
-
-fin_symbols = [
-    'MOO', 
-    'HYG', 
-    'VIXM', 
-    'VIXY', 
-    'XLF', 
-    'XLU', 
-    'XLY', 
-    'XLP', 
-    'IWF', 
-    'IWD', 
-    'BAC', 
-    'REET'
-]
-
-te_countries = [
-    'https://tradingeconomics.com/united-states/indicators',
-    'https://tradingeconomics.com/euro-area/indicators',
-    'https://tradingeconomics.com/united-kingdom/indicators',
-    'https://tradingeconomics.com/japan/indicators',
-    'https://tradingeconomics.com/canada/indicators',
-    'https://tradingeconomics.com/australia/indicators',
-    'https://tradingeconomics.com/new-zealand/indicators',
-    'https://tradingeconomics.com/switzerland/indicators',
-]
-# This is to handle finnhub 'num_candles' request automatically
-seconds_per_candle = {'1': 60,
-                      '5': 300,
-                     '15': 900,
-                     '30': 1800,
-                     '60': 3600,
-                      'D': 86400
-                     }
+# 
+# Add some condition that will only save calendar data 
+# when needed.  It should overwrite rows that are missing
+# data in the forecast or previous columns.
+# match by date, time, ccy, event
+#
+# Add some time randomization to the TE request so I
+# don't get flagged as being a bot
 
 
 class UpdateDB():
@@ -140,15 +69,16 @@ class UpdateDB():
 
     def save_lfd_to_db(df):
         for i in df.index:
-            params = (  df.loc[i, 'reference'], 
+            params = (  df.loc[i, 'country'], 
+                        df.loc[i, 'date'], 
                         df.loc[i, 'category'], 
-                        df.loc[i, 'name'], 
+                        df.loc[i, 'event'], 
                         df.loc[i, 'last'], 
                         df.loc[i, 'previous'], 
                         df.loc[i, 'range'], 
                         df.loc[i, 'frequency'])
 
-            UpdateDB.c.execute("INSERT INTO lfd VALUES (?,?,?,?,?,?,?)", params)
+            UpdateDB.c.execute("INSERT INTO lfd VALUES (?,?,?,?,?,?,?,?)", params)
         UpdateDB.conn.commit()
 
     def _get_latest_ohlc_datetime(symbol, timeframe):
@@ -232,11 +162,13 @@ class UpdateDB():
 
         # Ensure proper data formatting
         timeframe = str(timeframe)
-        timeframe = mt5_timeframes[timeframe]
 
         UpdateDB._set_start_and_end_times(symbol, timeframe)
 
+        # Make request
+        timeframe = ohlc_symbols.mt5_timeframes[timeframe]
         data = mt5.copy_rates_range(symbol, timeframe, UpdateDB.start, UpdateDB.end)
+
         UpdateDB.mt5_df = pd.DataFrame(data)
         UpdateDB.mt5_df = UpdateDB.mt5_df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
         
@@ -253,37 +185,56 @@ class UpdateDB():
     def te_lfd_request(country):
         ''' Open each country's indicators web page '''
 
-        # This returns a list of 14 df's
+        # This returns a list of df's
         data = pd.read_html(country)
 
-        num = len(data)
-        if num != 14:
-            name = country.split('/')[3]
-            print(f"\n ~~~ WARNING: TradingEconomics returned unusual results for {name}")
-            print(f"Normally there are 14 df's but {num} were returned ~~~ \n")
-        
-        # The first and last are N/A (just a table of links)
-        data = data[1:13]
+         # These are the returned dataframes that I'm interested in
+        desired_data = [
+            'GDP',
+            'Labour',
+            'Prices',
+            'Money',
+            'Trade',
+            'Government',
+            'Taxes',
+            'Business',
+            'Consumer',
+            'Housing',
+            'Health'
+        ]
 
+        # Remove any dataframe who's column[0]'s title isn't in desired_data
+        for num, df in enumerate(data):
+            if df.columns[0] not in desired_data:
+                del data[num]
+
+        # Convert the country name in the web link into the currency name
+        ccy = ohlc_symbols.te_ccys[country.split('/')[3]]
         # Prepare data for combination into single df
         for num, df in enumerate(data):
             df['category'] = df.columns[0]
-            df = df.rename(columns = {df.columns[0]: 'name'})
-            df = df.drop(columns = 'Unnamed: 6')
+            df = df.rename(columns = {
+                                    df.columns[0]: 'event', 
+                                    'Reference': 'date'
+                                    })
             df = df.rename(str.lower, axis='columns')
             data[num] = df
 
         # Combine the list of dfs into a single df        
-        UpdateDB.te_df = pd.concat(data)
+        UpdateDB.te_df = pd.concat([df for df in data])
 
         # Ensure all data is SQLite friendly
-        UpdateDB.te_df['reference'] = UpdateDB.te_df['reference'].astype(str)
+        UpdateDB.te_df['country'] = ccy
+        UpdateDB.te_df['date'] = UpdateDB.te_df['date'].astype(str)
         UpdateDB.te_df['category'] = UpdateDB.te_df['category'].astype(str)
-        UpdateDB.te_df['name'] = UpdateDB.te_df['name'].astype(str)
-        UpdateDB.te_df['last'] = UpdateDB.te_df['last'].astype(float)
-        UpdateDB.te_df['previous'] = UpdateDB.te_df['previous'].astype(float)
+        UpdateDB.te_df['event'] = UpdateDB.te_df['event'].astype(str)
+        UpdateDB.te_df['last'] = UpdateDB.te_df['last'].astype(str)
+        UpdateDB.te_df['previous'] = UpdateDB.te_df['previous'].astype(str)
         UpdateDB.te_df['range'] = UpdateDB.te_df['range'].astype(str)
         UpdateDB.te_df['frequency'] = UpdateDB.te_df['frequency'].astype(str)
+
+        UpdateDB.te_df = UpdateDB.te_df.dropna(axis=1)
+        UpdateDB.te_df = UpdateDB.te_df.reset_index(drop=True)
 
     def ff_hfd_request():
         # use creds to create a client to interact with the Google Drive API
@@ -336,33 +287,28 @@ class UpdateDB():
         UpdateDB.cal_df['forecast'] = UpdateDB.cal_df['forecast'].astype(str)
         UpdateDB.cal_df['previous'] = UpdateDB.cal_df['previous'].astype(str)
 
-
-
 def main():        
     ''' Open the db connection, update the data '''
     
     UpdateDB.connect_to_db()
 
     # Update Finnhub data (confirmed working 1/1/2021)
-    for symbol in fin_symbols:
+    for symbol in ohlc_symbols.fin_symbols:
         UpdateDB.finnhub_ohlc_request(symbol, 5)
         UpdateDB.save_ohlc_to_db(UpdateDB.finnhub_df)
 
     # Update MT5 data (confirmed working 1/1/2021)
-    for symbol in mt5_symbols:
+    for symbol in ohlc_symbols.mt5_symbols:
         UpdateDB.mt5_ohlc_request(symbol, 5)
         UpdateDB.save_ohlc_to_db(UpdateDB.mt5_df)
+
+    # Update Trading Economics data 
+    for country in ohlc_symbols.te_countries:
+        UpdateDB.te_lfd_request(country)
+        UpdateDB.save_lfd_to_db(UpdateDB.te_df)
 
     # Update Forex Factory calendar
     UpdateDB.ff_hfd_request()
     UpdateDB.save_hfd_to_db(UpdateDB.cal_df)
 
-    # Update Trading Economics data 
-    for country in te_countries:
-        UpdateDB.te_hfd_request(country)
-        UpdateDB.save_lfd_to_db(UpdateDB.te_df)
-        # Getting error: "sqlite3.InterfaceError: Error binding parameter 0 - probably unsupported type."
-        # Even though I've explicitly set all of the data types...
 main()
-
-
