@@ -4,12 +4,13 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime
+from create_db import path  # local path to the database 
 
-path = r'C:\Users\Rudy\Desktop\codez\forex.db'
+
 
 ''' 
-    This module will make a request for current, weekly data every hour.
-    It will then query the db in order to perform it's calculations, 
+    This module will make a request for the current week's data every hour.
+    It will then query the db in order to perform its normalizations etc, 
     but will only update the db with the weekly data on the weekend
     once all the 'actuals' are set. 
     
