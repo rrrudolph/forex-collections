@@ -173,6 +173,19 @@ def evaluate_forecast_rating(weights=event_weights):
 
         return ratings
 
-        # Could add some more logic to that like checking if forecasts are generally
-        # too high or too low.  And also the trend of the numbers as an indication
-        # on liklihood of a forecasts accuracy.
+        '''
+        what I need to do is add some logic to weight the forecast rating based on other
+        factors before combining.  In essence to try to get a "relevance" score to apply
+        to the rating.
+        Considerations:
+        1. the recent trend of 'previous' (have they been consistently positive or negative)
+        2. the accuracy of the forecast (an absolute value)
+        3. the accuracy of the forecast in terms of being consistently high or low
+
+        I'll create a formula to calculate the weight of each of these and then derive the final
+        forecast rating from that, which then when combined with other ratings won't allow a forecast
+        to be skewed.  
+
+        However this is low priority as it's only going to really matter when there are multiple 
+        forecasts falling within the same 48hr window.
+        '''
