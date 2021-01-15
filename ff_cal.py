@@ -4,9 +4,9 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime
-from create_db import path  # local path to the database 
+from create_db import setup_conn, path  # local path to the database 
 
-
+conn, c = setup_conn(path)
 
 ''' 
     This module will make a request for the current week's data every hour.
@@ -57,7 +57,7 @@ def format_weekly_data():
 
     data = weekly_ff_cal_request()
 
-    # Clean data cuz its really really bad
+    # Clean data cuz it's really quite bad
     df = pd.DataFrame(data)
     # df = df[1:]
     df = df.rename(str.lower, axis='columns')
@@ -98,21 +98,18 @@ def format_weekly_data():
     df.forecast = df.forecast.replace(reg,'',regex=True)
     df.forecast = df.forecast.replace(reg,'',regex=True)
 
-    print(df)
     return df
 
-def read_database(event, path=path):
+def read_database(event, conn=conn path=path):
     
-    # Grab dat db
-    conn = sqlite3.connect(path)
-    c = conn.cursor()
-
     query = f'''(SELECT * 
                 FROM ff_cal
                 WHERE event = {event}; 
                 )'''
 
-    return c.execute(query).fetchall()
+    df = pd.read_sql(query, conn)
+
+    return df
 
 
 def evaluate_forecast_rating(weights=event_weights):
@@ -121,18 +118,25 @@ def evaluate_forecast_rating(weights=event_weights):
     
     # Loop through events with forecasts which are set to drop within the next 48 hours
     time_horizon = datetime.now() + pd.Timedelta('2 days')
-    filter_ = ((weekly_df.forecast.notna()) & (weekly_df.datetime < time_horizon))
+    filtered_df = weekly_df.event[
+        (weekly_df.forecast.notna()) 
+        & 
+        (weekly_df.datetime < time_horizon)
+    ]
     
-    for event in weekly_df.event[filter_]:
+    ratings = {}
+    for event in filtered_df:
+
+        # Query the database for all equivalent events
         db_df = read_database(event)
 
-        # Database values are saved as string so convert to proper dtype
+        # Database values are saved as str so convert to proper dtype
         db_df.datetime = pd.to_datetime(db_df.datetime)
         db_df.actual = db_df.actual.astype(float)
         db_df.forecast = db_df.forecast.astype(float)
         db_df.previous = db_df.previous.astype(float)
 
-        # Combine the weekly row with the db and sort
+        # Combine the current event with equivalent db events and sort
         df = pd.concat(weekly_df[weekly_df.event == event], db_df)
         df = df.sort_values(by=['datetime'])
 
@@ -148,9 +152,27 @@ def evaluate_forecast_rating(weights=event_weights):
         for item in weights:     
             if item in event:
                 weight = weights[item]
+            else:
+                weight = 1
         
         forecast_rating *= weight
 
+        # Get the accuracy of the forecasts in predicting the actuals.
+        # A forecast of 12 for an actual of 10 will result in 80% (note: prev used on purpose).
+        accuracy = 100 - (abs(df.forecast - df.previous) / df.previous * 100)
+        avg_accuracy = str(round(accuracy.tail(5).mean())) + '%'
 
-        ## Okkk done for the night. at this point I need to accumulate all
-        # of the forecasts and send them off to the central ratings.csv
+        # Now add those values to the ratings dict
+        ccy_name = event[:3]
+        if ccy_name in ratings:
+            ratings[ccy_name][0] += forecast_rating
+            ratings[ccy_name][1] += avg_accuracy
+        else:
+            ratings[ccy_name][0] = forecast_rating
+            ratings[ccy_name][1] = avg_accuracy
+
+        return ratings
+
+        # Could add some more logic to that like checking if forecasts are generally
+        # too high or too low.  And also the trend of the numbers as an indication
+        # on liklihood of a forecasts accuracy.
