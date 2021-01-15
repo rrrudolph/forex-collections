@@ -27,15 +27,13 @@ def request_te_data(country):
     ]
 
     # Only save a dataframe who's column[0]'s title is in desired_data
-    remove = []      
+    removed = 0     
     for idx, df in enumerate(data):
         if df.columns[0] not in desired_data:
-           remove.append(idx)
+           del data[idx - removed]
 
-    # Delete from the upper indices to lower, otherwise the order gets messed up
-    remove.reverse()
-    for df in remove:
-        del data[df]
+            # Account for the change in index 
+           removed += 1
 
     # Convert the the web link into the country name
     country_name = country.split('/')[3]
