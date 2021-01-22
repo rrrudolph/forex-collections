@@ -1,12 +1,17 @@
 import pandas as pd
 from create_db import setup_conn, path  # get the connection to the database
 from ohlc_symbols import te_countries
+import time
+import random
 
 conn, c = setup_conn(path)
 # conn = setup_conn(path)[0]
 
 def request_te_data(country):
-    ''' Open each country's indicators web page '''
+    ''' Open each country's indicators web page and scrape the data'''
+    
+    # First add a random delay period to hopefully not get identified as being a bot
+    time.sleep(random.randint(100, 400))
 
     # This returns a list of df's
     data = pd.read_html(country)
@@ -66,30 +71,31 @@ def request_te_data(country):
 
     return te_df
 
-def save_te_data_to_db(dfs, conn, c):
+def save_te_data_to_db(df, conn, c):
 
-    # Create a single df out of the list of dfs that were passed in
-    df = pd.concat([df for df in dfs])
+    df.to_sql('raw_te_data', con=conn, if_exists='append', index=False )
 
-    for i in df.index:
-        params = (  
-                    df.loc[i, 'country'], 
-                    df.loc[i, 'date'], 
-                    df.loc[i, 'category'], 
-                    df.loc[i, 'event'], 
-                    df.loc[i, 'last'], 
-                    df.loc[i, 'previous'], 
-                    df.loc[i, 'range'], 
-                    df.loc[i, 'frequency']
-                )
+    # Old code:
+    # for i in df.index:
+    #     params = (  
+    #                 df.loc[i, 'country'], 
+    #                 df.loc[i, 'date'], 
+    #                 df.loc[i, 'category'], 
+    #                 df.loc[i, 'event'], 
+    #                 df.loc[i, 'last'], 
+    #                 df.loc[i, 'previous'], 
+    #                 df.loc[i, 'range'], 
+    #                 df.loc[i, 'frequency']
+    #             )
 
-        c.execute("INSERT INTO te_data_raw VALUES (?,?,?,?,?,?,?,?)", params)
-    conn.commit()
+    #     c.execute("INSERT INTO te_data_raw VALUES (?,?,?,?,?,?,?,?)", params)
+    # conn.commit()
 
 
 def run(conn, c, countries):
     
     te_dfs = [request_te_data(country) for country in countries]
     save_te_data_to_db(te_dfs, conn, c)
+
 
 run(conn, c, te_countries)
