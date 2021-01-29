@@ -20,22 +20,22 @@ fin_symbols = [
 ]
 
 
-fx_timeframes = [
-    'm1',
-    'm5',
-    'm15',
-    'H1',
-    'D1',
-]
+fx_timeframes = {
+    '1': 'm1',
+    '5': 'm5',
+    '15': 'm15',
+    '60': 'H1',
+    'D': 'D1'
+}
 
 
 # This is to handle finnhub 'num_candles' request automatically
-seconds_per_candle = {'1': 60,
-                      '5': 300,
-                     '15': 900,
-                     '30': 1800,
-                     '60': 3600,
-                      'D': 86400
+seconds_per_candle = {
+    '1': 60,
+    '5': 300,
+    '15': 900,
+    '60': 3600,
+    'D': 86400
 }
 
 
