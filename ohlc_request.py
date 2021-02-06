@@ -157,9 +157,8 @@ def _timeframes_to_request():
         # Parse the time to get the hour and minute
         date_and_hour = str(datetime.now()).split(':')
         hour = int(date_and_hour[0].split(' ')[1])
-        minute = int(str(datetime.now()).split(':')[1])
-        second = int(str(datetime.now()).split(':')[2].split('.')[0])
-
+        minute = int(datetime.today().minute)
+        second = int(datetime.today().second)
         # Get the list of timeframes to request depending on current time
         # starting with the highest timeframes to the lowest
         if hour == 0 and minute == 0:
@@ -173,7 +172,7 @@ def _timeframes_to_request():
                 timeframes: times[t]
                 return timeframes
 
-            if minute % t == 0:
+            elif minute % t == 0:
                 timeframes: times[t]
                 return timeframes
 
