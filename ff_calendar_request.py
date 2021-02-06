@@ -98,6 +98,16 @@ def weekly_ff_cal_request():
 
     return df
 
+def run_regex(df):
+    ''' Remove the non-numeric values '''
+
+    reg = r'([<>KMBT%])'
+    df.actual = df.actual.replace(reg,'',regex=True)
+    df.forecast = df.forecast.replace(reg,'',regex=True)
+    df.previous = df.previous.replace(reg,'',regex=True)
+
+    return df
+
 
 def clean_data(df, year, remove_non_numeric=True):
 
@@ -140,10 +150,7 @@ def clean_data(df, year, remove_non_numeric=True):
 
     # Remove all the non-numeric values
     if remove_non_numeric == True:
-        reg = r'([<>KMBT%])'
-        df.actual = df.actual.replace(reg,'',regex=True)
-        df.forecast = df.forecast.replace(reg,'',regex=True)
-        df.previous = df.previous.replace(reg,'',regex=True)
+        df = run_regex(df)
 
     # Re-order the columns
     df = df[['datetime', 'ccy', 'event', 'actual', 'forecast', 'previous']]
@@ -205,12 +212,35 @@ def evaluate_forecast_rating(weights=event_weights):
         # Check the accuracy of the forecast  -------------------------- to do
         # this should be a rollng mean or sometin, maybe like period 10. and make sure its abs()!!
         accuracy = db.loc[-1, 'accuracy'][(db.ccy == ccy) & (db.event == event)]
-
         forecast_rating *= accuracy
 
         # Check the trend of the n previous releases
         trend = db.loc[-1, 'trend'][(db.ccy == ccy) & (db.event == event)]
-def get_recent_trend(df):
+        forecast_rating *= trend
+
+def calculate_raw_db():
+    ''' Add accuracy, trend, and weight columns to the raw db,
+    then save as a new formatted file. '''
+
+    # Open file and prepare for calculations
+    df = pd.read_sql('ff_cal_raw', conn)
+    df = run_regex(df)
+
+    # Find unique events
+    df['ccy_event'] = df.ccy + df.event
+    unique_events = df.ccy_events.unique()
+
+
+
+    def _get_recent_accuracy(df, unique_events):
+        ''' The accuracy of the forecast will affect it's tradability. '''
+
+        # Make it a % 
+        accuracy = (100 - df.forecast / abs(df.forecast - df.actual)) / 100
+        df['abs_accuracy'] = accuracy.rolling(6).mean
+
+
+    def _get_recent_trend(df, unique_events):
 
         
 
