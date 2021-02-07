@@ -4,7 +4,7 @@ import sqlite3
 path = r'/home/r/Documents/forex.db'
 
 
-def _setup_conn(path):
+def setup_conn(path):
 
     conn = sqlite3.connect(path)
     c = conn.cursor()
@@ -13,7 +13,7 @@ def _setup_conn(path):
 
 def make_db_tables():
 
-    conn, c = _setup_conn(path)
+    conn, c = setup_conn(path)
 
     ''' THESE ARE THE RAW DATA TABLES '''
 
@@ -81,4 +81,3 @@ def make_db_tables():
     conn.commit()
     conn.close()
 
-make_db_tables()
