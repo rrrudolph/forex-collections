@@ -10,21 +10,8 @@ from tokens import ff_cal_sheet
 
 conn, c = setup_conn(econ_db)
 
-''' 
-    This module will make a request for the current week's data every hour.
-    It will then query the db in order to perform its normalizations etc, 
-    but will only update the db with the weekly data on the weekend
-    once all the 'actuals' are set. 
-    
-    Functions:
-        0. Build historical db
-        1. Request the current weeks data
-        2. Format that data
-        3. Query the db
-        4. Combine current week with db and calculate
-'''
 
-event_weights = {
+forecast_weights = {
     'Unemployment': 3,
     'Employment': 3,
     'CPI': 3,
@@ -66,7 +53,7 @@ def _update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     return df
 
 
-def build_historical_db(year_start=2012, year_end=2021):
+def build_historical_db(year_start=2012, year_end=2022):
     
     months = [
         'jan', 'feb', 'mar', 'apr', 'may', 'jun', 
@@ -74,18 +61,26 @@ def build_historical_db(year_start=2012, year_end=2021):
     ]
     years = range(year_start, year_end)
 
-    with conn:
-        for year in years:
-            for month in months:
+    for year in years:
+        for month in months:
+            
+            # Request data (there's a slight chance the program will go faster than gsheets will load)
+            df = _update_gsheet_cell(month, year, historical_fill=True)
+            time.sleep(1)
 
-                # Request data
-                df = _update_gsheet_cell(month, year, historical_fill=True)
+            # Clean and format a little
+            df = clean_data(df, year, remove_non_numeric=False)
 
-                # Clean and format a little
-                df = clean_data(df, year, remove_non_numeric=False)
+            # There won't be any blank 'actual' cells at this point, 
+            # so if one is found, stop saving data cuz the current month is reached
+            if len(df[df.actual.isnull()]) > 0:
+                break
 
-                # Update database
-                save_ff_cal_to_db(df)
+            # Update database
+            save_ff_cal_to_db(df)
+
+    #  :/
+    conn.close()
 
 
 def weekly_ff_cal_request():
@@ -97,6 +92,7 @@ def weekly_ff_cal_request():
     df = clean_data(df, year)
 
     return df
+
 
 def run_regex(df):
     ''' Remove the non-numeric values '''
@@ -147,18 +143,20 @@ def clean_data(df, year, remove_non_numeric=True):
     df['datetime'] = pd.to_datetime(df.date + ' ' + df.time)
     df.datetime = df.datetime - pd.Timedelta('1 hour')
     df = df.drop(columns = ['date', 'time'])
+    df['ccy_event'] = df.ccy + ' ' + df.event
+
 
     # Remove all the non-numeric values
     if remove_non_numeric == True:
         df = run_regex(df)
 
     # Re-order the columns
-    df = df[['datetime', 'ccy', 'event', 'actual', 'forecast', 'previous']]
+    df = df[['datetime', 'ccy', 'ccy_event', 'actual', 'forecast', 'previous']]
 
     return df
 
 
-def evaluate_forecast_rating(weights=event_weights):
+def rate_upcoming_forecasts(weights=forecast_weights):
     ''' Calculate the current weeks data by normalizing
     against the database. '''
 
@@ -181,42 +179,52 @@ def evaluate_forecast_rating(weights=event_weights):
     combined = pd.concat([db, df])
 
     # Now go through the upcoming events and calculate stuff
-    forecasts = pd.DataFrame()
+    forecasts = {}
     for i in df.index:
-        ccy = df.loc[i, 'ccy']
-        event = df.loc[i, 'event']
+        event = df.loc[i, 'ccy_event']
 
-        temp = combined[(combined.ccy == ccy) & (combined.event == event)]
+        temp = combined[combined.ccy_event == event]
 
         # Normalize forecast and previous 
         temp.forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
         temp.previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
 
         # Get the initial forecast change value
-        forecast_rating = temp.loc[-1, 'forecast'] = temp.loc[-1, 'previous']
+        forecast_rating = temp.loc[-1, 'forecast'] - temp.loc[-1, 'previous']
 
-        # Apply weighting
-        # Note: if an event is Final...PMI, it will assign a weight of 0.5
-        weight = None
-        for item in weights:     
-            
-            if item in event:
-                weight = weights[item]
-           
-           # If nothing is found set to 1
-            if weight is None:
-                weight = 1
-        
-        forecast_rating *= weight
+        # For the next group of calculations the last row will always be nan,
+        # so grab the second to last value
 
-        # Check the accuracy of the forecast  -------------------------- to do
-        # this should be a rollng mean or sometin, maybe like period 10. and make sure its abs()!!
-        accuracy = db.loc[-1, 'accuracy'][(db.ccy == ccy) & (db.event == event)]
+        # Check the trend of the n previous releases (actuals)
+        trend = db.loc[-2, 'trend'][db.ccy_event == event]
+
+        both_positive = forecast_rating > 0 and trend > 0
+        both_negative = forecast_rating < 0 and trend < 0
+        if both_positive or both_negative:
+            forecast_rating *= 1.25
+
+        # Check the currency's overall data trend
+        ccy_trend = db.loc[-2, 'ccy_trend'][db.ccy_event == event]
+
+        both_positive = forecast_rating > 0 and ccy_trend > 0
+        both_negative = forecast_rating < 0 and ccy_trend < 0
+        if both_positive or both_negative:
+            forecast_rating *= 1.25
+
+        # Multiply by the forecasts average accuracy (%)
+        accuracy = db.loc[-2, 'accuracy'][db.ccy_event == event]
         forecast_rating *= accuracy
 
-        # Check the trend of the n previous releases
-        trend = db.loc[-1, 'trend'][(db.ccy == ccy) & (db.event == event)]
-        forecast_rating *= trend
+        # Finally, add that currency and its data to the dict to send off to the global ratings controller
+        ccy = df.loc[i, 'ccy']
+        if forecasts[ccy]:
+           forecasts[ccy] += forecast_rating
+        else:
+           forecasts[ccy] = forecast_rating
+
+    # dict
+    return forecasts
+
 
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
@@ -226,87 +234,51 @@ def calculate_raw_db():
     df = pd.read_sql('ff_cal_raw', conn)
     df = run_regex(df)
 
-    # Find unique events
-    df['ccy_event'] = df.ccy + df.event
+    # Find unique events (forecasts)
+    df['ccy_event'] = df.ccy + ' ' + df.event
     unique_events = df.ccy_events.unique()
 
 
+    # Run some calculations on each unique event
+    for unique_event in unique_events:
+        temp = df[df.ccy_event == unique_event]
 
-    def _get_recent_accuracy(df, unique_events):
-        ''' The accuracy of the forecast will affect it's tradability. '''
-
-        # Make it a % 
-        accuracy = (100 - df.forecast / abs(df.forecast - df.actual)) / 100
-        df['abs_accuracy'] = accuracy.rolling(6).mean
-
-
-    def _get_recent_trend(df, unique_events):
-
+        # Apply weights (certain forecast events are more important than others)
+        # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
+        weight = None
+        for event in forecast_weights:     
+            
+            if event in unique_event:
+                weight = forecast_weights[event]
+           
+           # If nothing is found set to 1
+            if weight is None:
+                weight = 1
         
+        df.loc[temp.index, 'weight'] = weight
 
+        # Get the recent accuracy of the forecast as a percentage
+        accuracy = (100 - temp.forecast / abs(temp.forecast - temp.actual)) / 100
+        df.loc[temp.index, 'abs_accuracy'] = accuracy.rolling(6).mean()
 
+        # Get the recent trend of the actuals (per unique forecast)
+        trend = temp.actual.diff().rolling(4).mean()
+        df.loc[temp.index, 'trend'] = trend
 
-    ratings = {}
-    for event in upcoming_events:
+        # Get the recent trend of the actuals (overall by currency)
+        # Make a new temp df
+        temp = df[df.ccy == temp.ccy[1]]
+        ccy_trend = temp.trend.rolling(7).mean()
+        df.loc[temp.index, 'ccy_trend'] = ccy_trend
 
-        # Query the database for all equivalent events
-        db_df = read_database(event)
+    # Overwrite current file
+    df.to_sql('ff_cal', conn, if_exists='replace')
 
-        # Database values are saved as str so convert to proper dtype
-        db_df.datetime = pd.to_datetime(db_df.datetime)
-        db_df.actual = db_df.actual.astype(float)
-        db_df.forecast = db_df.forecast.astype(float)
-        db_df.previous = db_df.previous.astype(float)
-
-        # Combine the current event with equivalent db events and sort
-        df = pd.concat(weekly_df[weekly_df.event == event], db_df)
-        df = df.sort_values(by=['datetime'])
-
-        # Normalize the data
-        df.actual = (df.actual - min(df.actual)) / (max(df.actual) - min(df.actual))
-        df.forecast = (df.forecast - min(df.forecast)) / (max(df.forecast) - min(df.forecast))
-        df.previous = (df.previous - min(df.previous)) / (max(df.previous) - min(df.previous))
-
-        # Check the forecast rating and apply weighting
-        forecast_rating = df.loc[-1, 'forecast'] - df.loc[-1, 'previous']
-
-
-        # Get the accuracy of the forecasts in predicting the actuals.
-        # A forecast of 12 for an actual of 10 will result in 80% (note: prev used on purpose).
-        accuracy = 100 - (abs(df.forecast - df.previous) / df.previous * 100)
-        avg_accuracy = str(round(accuracy.tail(5).mean())) + '%'
-
-        # Now add those values to the ratings dict
-        ccy_name = event[:3]
-        if ccy_name in ratings:
-            ratings[ccy_name][0] += forecast_rating
-            ratings[ccy_name][1] += avg_accuracy
-        else:
-            ratings[ccy_name][0] = forecast_rating
-            ratings[ccy_name][1] = avg_accuracy
-
-        return ratings
-
-        '''
-        what I need to do is add some logic to weight the forecast rating based on other
-        factors before combining.  In essence to try to get a "relevance" score to apply
-        to the rating.
-        Considerations:
-        1. the recent trend of 'previous' (have they been consistently positive or negative)
-        2. the accuracy of the forecast (an absolute value)
-        3. the accuracy of the forecast in terms of being consistently high or low
-
-        I'll create a formula to calculate the weight of each of these and then derive the final
-        forecast rating from that, which then when combined with other ratings won't allow a forecast
-        to be skewed.  
-
-        However this is low priority as it's only going to really matter when there are multiple 
-        forecasts falling within the same 48hr window.
-        '''
 
 def save_ff_cal_to_db(df):
     ''' Write the data to the database. '''
 
     df.to_sql('ff_cal_raw', conn, if_exists='append', index=False)
+
 
 build_historical_db()
