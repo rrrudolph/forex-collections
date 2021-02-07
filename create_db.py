@@ -1,7 +1,9 @@
 import sqlite3
+from symbols_lists import fx_symbols, fin_symbols
 
-# This is the home location for path. 
-path = r'/home/r/Documents/forex.db'
+# This is the home location for directory paths. 
+ohlc_db = r'/home/r/Documents/ohlc.db'
+econ_db = r'/home/r/Documents/economic_data.db'
 
 
 def setup_conn(path):
@@ -11,7 +13,7 @@ def setup_conn(path):
     return conn, c
 
 
-def make_db_tables():
+def make_db_tables(fx_symbols, fin_symbols):
 
     conn, c = setup_conn(path)
 
@@ -63,17 +65,18 @@ def make_db_tables():
                 frequency TEXT
                 )""")
 
-    # # Create the MT5/Finnhub forex OHLCV table (will only use a raw table)
-    c.execute("""CREATE TABLE ohlc (
-                datetime TEXT,
-                symbol TEXT,
-                timeframe TEXT,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume REAL
-                )""")
+    # # Create the raw ohlcv tables
+    # formatting isn't allowing in sql statements
+    for symbol in zip(fx_symbols, fin_symbols):
+        c.execute(f"""CREATE TABLE {symbol} (
+                        datetime TEXT,
+                        timeframe TEXT,
+                        open REAL,
+                        high REAL,
+                        low REAL,
+                        close REAL,
+                        volume REAL
+                        )""")
 
 
     # Apparently a context manager with sqlite only handles database transactions 
@@ -81,3 +84,5 @@ def make_db_tables():
     conn.commit()
     conn.close()
 
+if __name__ == "__main__":
+    make_db_tables(fx_symbols, fin_symbols)
