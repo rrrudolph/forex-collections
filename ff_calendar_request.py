@@ -2,7 +2,7 @@
 # from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import numpy as np
-import sqlite3
+import sys
 import time
 from datetime import datetime
 from create_db import setup_conn, econ_db  # local path to the database 
@@ -31,7 +31,7 @@ forecast_weights = {
 
 
 
-def _update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
+def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     ''' Handles content insertion into spreadsheet. 
     If doing a historical fill, pass month as first arg and year as second. '''
     
@@ -49,47 +49,6 @@ def _update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
 
     data = sheet.get_all_values() # list of lists
     df = pd.DataFrame(data)
-
-    return df
-
-
-def build_historical_db(year_start=2012, year_end=2022):
-    
-    months = [
-        'jan', 'feb', 'mar', 'apr', 'may', 'jun', 
-        'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
-    ]
-    years = range(year_start, year_end)
-
-    for year in years:
-        for month in months:
-            
-            # Request data (there's a slight chance the program will go faster than gsheets will load)
-            df = _update_gsheet_cell(month, year, historical_fill=True)
-            time.sleep(1)
-
-            # Clean and format a little
-            df = clean_data(df, year, remove_non_numeric=False)
-
-            # There won't be any blank 'actual' cells at this point, 
-            # so if one is found, stop saving data cuz the current month is reached
-            if len(df[df.actual.isnull()]) > 0:
-                break
-
-            # Update database
-            save_ff_cal_to_db(df)
-
-    #  :/
-    conn.close()
-
-
-def weekly_ff_cal_request():
-
-    # Make request
-    df = _update_gsheet_cell()
-
-    year = datetime.today().year
-    df = clean_data(df, year)
 
     return df
 
@@ -152,6 +111,69 @@ def clean_data(df, year, remove_non_numeric=True):
 
     # Re-order the columns
     df = df[['datetime', 'ccy', 'ccy_event', 'actual', 'forecast', 'previous']]
+
+    return df
+
+
+def build_historical_db(year_start=2012):
+    ''' Get historical data from 2012 through the last completed month. 
+    E.g., if current date is Feb 2021, it will get everything thru Jan 2021. '''
+    
+    months = {
+        1:'jan', 2:'feb', 3:'mar', 4:'apr', 5:'may', 6:'jun', 
+        7:'jul', 8:'aug', 9:'sep', 10:'oct', 11:'nov', 12:'dec'
+    }
+
+    current_month = months[datetime.today().month]
+    current_year = datetime.today().year
+
+    years = range(year_start, current_year + 1)
+
+    for year in years:
+        for month in months.values():
+
+            if month == current_month and year == current_year:
+                sys.exit()
+
+            # Request data
+            df = update_gsheet_cell(month, year, historical_fill=True)
+            time.sleep(1)
+
+            # Clean and format a little
+            # It's possible that the gsheet didn't load in time, if that happens pause and retry
+            try:
+                df = clean_data(df, year, remove_non_numeric=False)
+            except IndexError:
+                time.sleep(3)
+                df = clean_data(df, year, remove_non_numeric=False)
+
+            # Update database
+            save_ff_cal_to_db(df)
+
+    #  :/
+    conn.close()
+
+
+def weekly_ff_cal_request():
+    ''' Get the current week's data. If today is Saturday append
+    that data to the raw database and sleep for 24hrs. '''  
+
+    # Make request
+    df = update_gsheet_cell()
+
+    # If today is Saturday, save the data and sleep the program for 24hrs
+    # Monday is 0, Sunday is 6
+    year = datetime.today().year
+    weekday = datetime.today().weekday()
+    if weekday == 5:
+
+        df = clean_data(df, year, remove_non_numeric=False)
+        save_ff_cal_to_db(df)
+        time.sleep(60*1440)
+
+    # Otherwise just a regular operation
+    else:
+        df = clean_data(df, year)
 
     return df
 
@@ -228,16 +250,15 @@ def rate_upcoming_forecasts(weights=forecast_weights):
 
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
-    then save as a new formatted file. '''
+    then save as a new formatted file. This only needs to be done weekly
+    when new data is added, and only needs to look at the previous 7 months. '''
 
     # Open file and prepare for calculations
     df = pd.read_sql('ff_cal_raw', conn)
     df = run_regex(df)
 
     # Find unique events (forecasts)
-    df['ccy_event'] = df.ccy + ' ' + df.event
     unique_events = df.ccy_events.unique()
-
 
     # Run some calculations on each unique event
     for unique_event in unique_events:
@@ -270,6 +291,25 @@ def calculate_raw_db():
         temp = df[df.ccy == temp.ccy[1]]
         ccy_trend = temp.trend.rolling(7).mean()
         df.loc[temp.index, 'ccy_trend'] = ccy_trend
+
+
+    # Set the monthly outlook using PMI and Consumer Confidence / Sentiment
+    # I only want the most recent data (either a forecast or an actual) for each event
+    events = ['PMI', 'Confidence', 'Sentiment']
+    for event in events:
+
+        monthly_uniques = df[df.ccy_event.str.contains(event)].groupby('ccy')
+    # In order to avoid calculating both Flash and Final, or Prelim and Final, 
+    # I'll want to group by ccy and grab all of each event (all PMIs for example)
+    monthly_outlook = 0
+    for event in monthly_uniques:
+
+        # Return all occurences of that single monthly outlook event
+        temp = df[df.ccy_event == event]
+
+
+
+
 
     # Overwrite current file
     df.to_sql('ff_cal', conn, if_exists='replace')
