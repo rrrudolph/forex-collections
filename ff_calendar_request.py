@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import sys
 import time
+import sqlite3
 from datetime import datetime
 from create_db import setup_conn, econ_db  # local path to the database 
 from tokens import ff_cal_sheet
@@ -35,8 +36,9 @@ def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     ''' Handles content insertion into spreadsheet. 
     If doing a historical fill, pass month as first arg and year as second. '''
     
-    month = args[0]
-    year = args[1]
+    if args:
+        month = args[0]
+        year = args[1]
 
     if historical_fill == True:
         cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month={month}.{year}", "table", 4)"""
@@ -60,6 +62,18 @@ def run_regex(df):
     df.actual = df.actual.replace(reg,'',regex=True)
     df.forecast = df.forecast.replace(reg,'',regex=True)
     df.previous = df.previous.replace(reg,'',regex=True)
+
+    return df
+
+
+def _set_dtypes(df):
+
+    # Fill blanks with nan so I can convert to the right dtype
+    df = df.replace('', np.nan)
+
+    df.forecast = df.forecast.astype(float)
+    df.actual = df.actual.astype(float)
+    df.previous = df.previous.astype(float)
 
     return df
 
@@ -105,7 +119,7 @@ def clean_data(df, year, remove_non_numeric=True):
     df['ccy_event'] = df.ccy + ' ' + df.event
 
     # Re-order the columns
-    df = df[['datetime', 'ccy', 'ccy_event', 'actual', 'forecast', 'previous']]
+    df = df[['datetime', 'ccy', 'ccy_event', 'forecast', 'actual', 'previous']]
 
     # Remove all the non-numeric values
     if remove_non_numeric == True:
@@ -184,7 +198,8 @@ def rate_weekly_forecasts(weights=forecast_weights):
 
     # While my database is still small it makes more sense to
     # read the whole thing into memory rather than make queries, so...
-    db = pd.read_sql('ff_cal', conn)
+    db = pd.read_sql('SELECT * FROM ff_cal', conn)
+    db = _set_dtypes(db)
 
     df = weekly_ff_cal_request()
     
@@ -253,13 +268,15 @@ def rate_monthly_outlook():
     using a few select events.'''
 
     # Load data and combine
-    db = pd.read_sql('ff_cal', conn)
+    db = pd.read_sql('SELECT * FROM ff_cal', conn)
     df = weekly_ff_cal_request()
     df = pd.concat([db, df])
 
+    df = _set_dtypes(df)
+
     # Filter for only the events I want
     events = 'PMI|Confidence|Sentiment'
-    monthly_uniques = df[df.event.str.contains(events)]
+    monthly_uniques = df[df.ccy_event.str.contains(events)]
     ccys = df.ccy.unique()
 
     # Iter through each currency
@@ -272,17 +289,17 @@ def rate_monthly_outlook():
 
         # Get the latest data (forecast or actual) for each unique event, within each unique ccy
         total = []
-        event_uniques = ccy_uniques.event.unique()
+        event_uniques = ccy_uniques.ccy_event.unique()
         for event in event_uniques:
-            print('event:', event)
+            # print('event:', event)
 
             # Get last row of matching event where there is a forecast listed
-            temp = df[(df.event == event) 
+            temp = df[(df.ccy_event == event) 
                       & 
                       ((df.forecast.notna()) 
                       | 
                       (df.actual.notna()))
-                    ]
+                    ].copy()
             
             # In the rare case of a new type of event where there's
             # no history to calculate, just skip it
@@ -301,11 +318,11 @@ def rate_monthly_outlook():
             # If an actual is available use that, otherwise use forecast
             if temp.actual is not np.nan:
                 latest = temp.norm_actual[1] - temp.norm_actual[0]
-                total.append(latest.values)
+                total.append(latest)
 
             else: 
                 latest = temp.norm_forecast[1] - temp.norm_forecast[0]
-                total.append(latest.values)
+                total.append(latest)
             
         # Save result in the dict
         avg = sum(total) / len(total)
@@ -320,15 +337,18 @@ def calculate_raw_db():
     when new data is added, and only needs to look at the previous 7 months. '''
 
     # Open file and prepare for calculations
-    df = pd.read_sql('ff_cal_raw', conn)
+    df = pd.read_sql('SELECT * FROM ff_cal_raw', conn)
     df = run_regex(df)
+    df = _set_dtypes(df)
 
     # Find unique events (forecasts)
-    unique_events = df.ccy_events.unique()
+    unique_events = df.ccy_event.unique()
 
     # Run some calculations on each unique event
     for unique_event in unique_events:
-        temp = df[df.ccy_event == unique_event]
+
+        # Normalize the actuals
+        df['norm_actual'] = (df.actual - min(df.actual)) / (max(df.actual) - min(df.actual))
 
         # Apply weights (certain forecast events are more important than others)
         # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
@@ -342,25 +362,28 @@ def calculate_raw_db():
             if weight is None:
                 weight = 1
         
+        temp = df[df.ccy_event == unique_event]
         df.loc[temp.index, 'weight'] = weight
 
-        # Get the recent accuracy of the forecast as a percentage
-        accuracy = (100 - temp.forecast / abs(temp.forecast - temp.actual)) / 100
-        df.loc[temp.index, 'abs_accuracy'] = accuracy.rolling(6).mean()
+
+        # Get the recent accuracy of the forecast as a percentage (returns lots of 'inf's)
+        accuracy = temp.actual / temp.forecast 
+        accuracy = accuracy.replace([-np.Inf, np.Inf], 0)
+        df.loc[temp.index, 'abs_accuracy'] = round(accuracy.rolling(6).mean(), 2)
 
         # Get the recent trend of the actuals (per unique forecast)
-        trend = temp.actual.diff().rolling(4).mean()
+        trend = temp.norm_actual.diff().rolling(4).mean()
         df.loc[temp.index, 'trend'] = trend
 
         # Get the recent trend of the actuals (overall by currency)
         # Make a new temp df
-        temp = df[df.ccy == temp.ccy[1]]
+        temp = df[df.ccy == temp.ccy.values[0]]
         ccy_trend = temp.trend.rolling(7).mean()
         df.loc[temp.index, 'ccy_trend'] = ccy_trend
 
 
     # Overwrite current database file
-    df.to_sql('ff_cal', conn, if_exists='replace')
+    df.to_sql("ff_cal", conn, if_exists='replace', index=True)
 
 
 def save_ff_cal_to_db(df):
@@ -368,5 +391,5 @@ def save_ff_cal_to_db(df):
 
     df.to_sql('ff_cal_raw', conn, if_exists='append', index=False)
 
-
-build_historical_db()
+# build_historical_db(year_start=2012)
+calculate_raw_db()
