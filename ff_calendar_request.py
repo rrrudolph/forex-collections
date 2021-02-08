@@ -104,13 +104,13 @@ def clean_data(df, year, remove_non_numeric=True):
     df = df.drop(columns = ['date', 'time'])
     df['ccy_event'] = df.ccy + ' ' + df.event
 
+    # Re-order the columns
+    df = df[['datetime', 'ccy', 'ccy_event', 'actual', 'forecast', 'previous']]
 
     # Remove all the non-numeric values
     if remove_non_numeric == True:
         df = run_regex(df)
 
-    # Re-order the columns
-    df = df[['datetime', 'ccy', 'ccy_event', 'actual', 'forecast', 'previous']]
 
     return df
 
@@ -178,7 +178,7 @@ def weekly_ff_cal_request():
     return df
 
 
-def rate_upcoming_forecasts(weights=forecast_weights):
+def rate_weekly_forecasts(weights=forecast_weights):
     ''' Calculate the current weeks data by normalizing
     against the database. '''
 
@@ -248,6 +248,72 @@ def rate_upcoming_forecasts(weights=forecast_weights):
     return forecasts
 
 
+def rate_monthly_outlook():
+    ''' Calculate the longer term, directional outlook for each currency
+    using a few select events.'''
+
+    # Load data and combine
+    db = pd.read_sql('ff_cal', conn)
+    df = weekly_ff_cal_request()
+    df = pd.concat([db, df])
+
+    # Filter for only the events I want
+    events = 'PMI|Confidence|Sentiment'
+    monthly_uniques = df[df.event.str.contains(events)]
+    ccys = df.ccy.unique()
+
+    # Iter through each currency
+    ccy_outlook = {}
+    for ccy in ccys:
+
+        # Filter for only the events belonging to that currency
+        ccy_uniques = monthly_uniques[monthly_uniques.ccy == ccy]
+        # print('ccy event_uniques:',event_uniques)
+
+        # Get the latest data (forecast or actual) for each unique event, within each unique ccy
+        total = []
+        event_uniques = ccy_uniques.event.unique()
+        for event in event_uniques:
+            print('event:', event)
+
+            # Get last row of matching event where there is a forecast listed
+            temp = df[(df.event == event) 
+                      & 
+                      ((df.forecast.notna()) 
+                      | 
+                      (df.actual.notna()))
+                    ]
+            
+            # In the rare case of a new type of event where there's
+            # no history to calculate, just skip it
+            if len(temp) < 2:
+                print('rate_monthly_outlook: new event!')
+                print(ccy, event)
+                continue
+
+            # Create normalized columns
+            temp['norm_actual'] = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+            temp['norm_forecast'] = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
+            temp['norm_previous'] = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
+
+            temp = temp.tail(2).reset_index()
+
+            # If an actual is available use that, otherwise use forecast
+            if temp.actual is not np.nan:
+                latest = temp.norm_actual[1] - temp.norm_actual[0]
+                total.append(latest.values)
+
+            else: 
+                latest = temp.norm_forecast[1] - temp.norm_forecast[0]
+                total.append(latest.values)
+            
+        # Save result in the dict
+        avg = sum(total) / len(total)
+        ccy_outlook[ccy] = avg
+
+    return ccy_outlook
+        
+
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
     then save as a new formatted file. This only needs to be done weekly
@@ -293,25 +359,7 @@ def calculate_raw_db():
         df.loc[temp.index, 'ccy_trend'] = ccy_trend
 
 
-    # Set the monthly outlook using PMI and Consumer Confidence / Sentiment
-    # I only want the most recent data (either a forecast or an actual) for each event
-    events = ['PMI', 'Confidence', 'Sentiment']
-    for event in events:
-
-        monthly_uniques = df[df.ccy_event.str.contains(event)].groupby('ccy')
-    # In order to avoid calculating both Flash and Final, or Prelim and Final, 
-    # I'll want to group by ccy and grab all of each event (all PMIs for example)
-    monthly_outlook = 0
-    for event in monthly_uniques:
-
-        # Return all occurences of that single monthly outlook event
-        temp = df[df.ccy_event == event]
-
-
-
-
-
-    # Overwrite current file
+    # Overwrite current database file
     df.to_sql('ff_cal', conn, if_exists='replace')
 
 
