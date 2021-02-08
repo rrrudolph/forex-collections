@@ -183,6 +183,7 @@ def weekly_ff_cal_request():
 
         df = clean_data(df, year, remove_non_numeric=False)
         save_ff_cal_to_db(df)
+        calculate_raw_db(df)
         time.sleep(60*1440)
 
     # Otherwise just a regular operation
@@ -194,7 +195,7 @@ def weekly_ff_cal_request():
 
 def rate_weekly_forecasts(weights=forecast_weights):
     ''' Calculate the current weeks data by normalizing
-    against the database. '''
+    against the database. Returns a dict. '''
 
     # While my database is still small it makes more sense to
     # read the whole thing into memory rather than make queries, so...
@@ -265,7 +266,7 @@ def rate_weekly_forecasts(weights=forecast_weights):
 
 def rate_monthly_outlook():
     ''' Calculate the longer term, directional outlook for each currency
-    using a few select events.'''
+    using a few select events.  Returns a dict'''
 
     # Load data and combine
     db = pd.read_sql('SELECT * FROM ff_cal', conn)
@@ -391,5 +392,15 @@ def save_ff_cal_to_db(df):
 
     df.to_sql('ff_cal_raw', conn, if_exists='append', index=False)
 
-# build_historical_db(year_start=2012)
-calculate_raw_db()
+
+def rating_handler():
+    ''' Both of these return dicts.  Data will be automatically
+    added to the database on Saturday through the weekly_request function
+    which gets called inside each of these functions. So essentially, everything
+    is getting handled behind the scenes. '''
+
+    outlook = {}
+    outlook['weekly'] = rate_weekly_forecasts()
+    outlook['monthly'] = rate_monthly_outlook()
+
+    return outlook
