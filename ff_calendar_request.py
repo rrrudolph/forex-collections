@@ -70,7 +70,7 @@ def _set_dtypes(df):
 
     # Fill blanks with nan so I can convert to the right dtype
     df = df.replace('', np.nan)
-
+    df.datetime = pd.to_datetime(df.datetime)
     df.forecast = df.forecast.astype(float)
     df.actual = df.actual.astype(float)
     df.previous = df.previous.astype(float)
@@ -81,7 +81,6 @@ def _set_dtypes(df):
 def clean_data(df, year, remove_non_numeric=True):
 
     # Clean data cuz it's really quite bad
-
     df = df.rename(columns = {
             df.columns[0]: 'date', 
             df.columns[1]: 'time', 
@@ -203,14 +202,18 @@ def rate_weekly_forecasts(weights=forecast_weights):
     db = _set_dtypes(db)
 
     df = weekly_ff_cal_request()
+    df = _set_dtypes(df)
     
     # Filter for events with forecasts which are set to drop within the next 48 hours
     # datetime.now() is actually 6 hours ahead 
     time_horizon = datetime.now() + pd.Timedelta('42 hours') 
+    current_time = datetime.now() - pd.Timedelta('6 hours')
     df = df[
         (df.forecast.notna()) 
         & 
         (df.datetime < time_horizon)
+        & 
+        (df.datetime > current_time)
     ]
     
     # Combine the df's to normalize and stuff
@@ -221,20 +224,25 @@ def rate_weekly_forecasts(weights=forecast_weights):
     for i in df.index:
         event = df.loc[i, 'ccy_event']
 
-        temp = combined[combined.ccy_event == event]
+        # Ensure there are no nans
+        temp = combined[(combined.ccy_event == event)
+                        &
+                        (combined.forecast.notna())
+                        &
+                        (combined.previous.notna())
+                        &
+                        (combined.trend.notna())
+                        ]
 
         # Normalize forecast and previous 
-        temp.forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
-        temp.previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
+        forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
+        previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
 
         # Get the initial forecast change value
-        forecast_rating = temp.loc[-1, 'forecast'] - temp.loc[-1, 'previous']
+        forecast_rating = (forecast - previous).values[-1]
 
-        # For the next group of calculations the last row will always be nan,
-        # so grab the second to last value
-
-        # Check the trend of the n previous releases (actuals)
-        trend = db.loc[-2, 'trend'][db.ccy_event == event]
+        # Get the trend of the actuals
+        trend = temp.trend.tail(1).values
 
         both_positive = forecast_rating > 0 and trend > 0
         both_negative = forecast_rating < 0 and trend < 0
@@ -242,23 +250,26 @@ def rate_weekly_forecasts(weights=forecast_weights):
             forecast_rating *= 1.25
 
         # Check the currency's overall data trend
-        ccy_trend = db.loc[-2, 'ccy_trend'][db.ccy_event == event]
+        ccy_trend = db.ccy_trend[db.ccy_event == event]
+        ccy_trend = ccy_trend.iloc[-2]
 
         both_positive = forecast_rating > 0 and ccy_trend > 0
         both_negative = forecast_rating < 0 and ccy_trend < 0
         if both_positive or both_negative:
             forecast_rating *= 1.25
 
-        # Multiply by the forecasts average accuracy (%)
-        accuracy = db.loc[-2, 'accuracy'][db.ccy_event == event]
-        forecast_rating *= accuracy
+        # Divide by the forecasts accuracy (perfect accuracy is 1)
+        accuracy = db.accuracy[(db.ccy_event == event) 
+                                &
+                               (db.accuracy.notna())].tail(1).values
+        forecast_rating /= accuracy
 
         # Finally, add that currency and its data to the dict to send off to the global ratings controller
         ccy = df.loc[i, 'ccy']
-        if forecasts[ccy]:
-           forecasts[ccy] += forecast_rating
+        if ccy in forecasts:
+           forecasts[ccy] += round(forecast_rating[0], 2)
         else:
-           forecasts[ccy] = forecast_rating
+           forecasts[ccy] = round(forecast_rating[0], 2)
 
     # dict
     return forecasts
@@ -286,48 +297,50 @@ def rate_monthly_outlook():
 
         # Filter for only the events belonging to that currency
         ccy_uniques = monthly_uniques[monthly_uniques.ccy == ccy]
-        # print('ccy event_uniques:',event_uniques)
 
         # Get the latest data (forecast or actual) for each unique event, within each unique ccy
         total = []
         event_uniques = ccy_uniques.ccy_event.unique()
         for event in event_uniques:
-            # print('event:', event)
 
-            # Get last row of matching event where there is a forecast listed
+            # Filter for matching event
             temp = df[(df.ccy_event == event) 
                       & 
                       ((df.forecast.notna()) 
-                      | 
+                      &
                       (df.actual.notna()))
-                    ].copy()
-            
+                    ]
+
             # In the rare case of a new type of event where there's
             # no history to calculate, just skip it
             if len(temp) < 2:
-                print('rate_monthly_outlook: new event!')
-                print(ccy, event)
+                print('rate_monthly_outlook(): new event!')
+                print(event)
                 continue
 
             # Create normalized columns
-            temp['norm_actual'] = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
-            temp['norm_forecast'] = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
-            temp['norm_previous'] = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
+            norm_actual = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+            norm_forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
 
-            temp = temp.tail(2).reset_index()
+            norm_actual = norm_actual.tail(2).values
+            norm_forecast = norm_forecast.tail(2).values
 
             # If an actual is available use that, otherwise use forecast
-            if temp.actual is not np.nan:
-                latest = temp.norm_actual[1] - temp.norm_actual[0]
+            if norm_actual is not np.nan:
+                latest = norm_actual[1] - norm_actual[0]
                 total.append(latest)
 
             else: 
-                latest = temp.norm_forecast[1] - temp.norm_forecast[0]
+                latest = norm_forecast[1] - norm_forecast[0]
                 total.append(latest)
             
         # Save result in the dict
+        # somehow I had a blank temp at this stage when it should have been caught at
+        # the first len(temp) check...... ???
+        if len(total) < 1:  
+            continue
         avg = sum(total) / len(total)
-        ccy_outlook[ccy] = avg
+        ccy_outlook[ccy] = round(avg, 2)
 
     return ccy_outlook
         
@@ -348,43 +361,47 @@ def calculate_raw_db():
     # Run some calculations on each unique event
     for unique_event in unique_events:
 
-        # Normalize the actuals
-        df['norm_actual'] = (df.actual - min(df.actual)) / (max(df.actual) - min(df.actual))
+        # Filter for just that event
+        temp = df[(df.ccy_event == unique_event)
+                  &
+                  (df.forecast.notna())
+                  &
+                  (df.actual.notna())
+                  ]
 
+        if len(temp) < 2:
+            continue
+        
         # Apply weights (certain forecast events are more important than others)
         # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
-        weight = None
+        weight = 1
         for event in forecast_weights:     
             
             if event in unique_event:
                 weight = forecast_weights[event]
-           
-           # If nothing is found set to 1
-            if weight is None:
-                weight = 1
-        
-        temp = df[df.ccy_event == unique_event]
+       
         df.loc[temp.index, 'weight'] = weight
-
 
         # Get the recent accuracy of the forecast as a percentage (returns lots of 'inf's)
         accuracy = temp.actual / temp.forecast 
         accuracy = accuracy.replace([-np.Inf, np.Inf], 0)
-        df.loc[temp.index, 'abs_accuracy'] = round(accuracy.rolling(6).mean(), 2)
+        df.loc[temp.index, 'accuracy'] = round(accuracy.rolling(6).mean(), 2)
 
-        # Get the recent trend of the actuals (per unique forecast)
-        trend = temp.norm_actual.diff().rolling(4).mean()
+        # Get the recent trend of the actuals (normalized)
+        normd = (df.actual - min(df.actual)) / (max(df.actual) - min(df.actual))
+        trend = normd.diff().rolling(4).mean()
         df.loc[temp.index, 'trend'] = trend
 
         # Get the recent trend of the actuals (overall by currency)
         # Make a new temp df
-        temp = df[df.ccy == temp.ccy.values[0]]
-        ccy_trend = temp.trend.rolling(7).mean()
+        ccy = temp.ccy.head(1).values[0]
+        trend = df.trend[df.ccy == ccy]
+        ccy_trend = trend.rolling(7).mean()
         df.loc[temp.index, 'ccy_trend'] = ccy_trend
 
 
     # Overwrite current database file
-    df.to_sql("ff_cal", conn, if_exists='replace', index=True)
+    df.to_sql("ff_cal", conn, if_exists='replace', index=False)
 
 
 def save_ff_cal_to_db(df):
@@ -393,7 +410,7 @@ def save_ff_cal_to_db(df):
     df.to_sql('ff_cal_raw', conn, if_exists='append', index=False)
 
 
-def rating_handler():
+def forecast_handler():
     ''' Both of these return dicts.  Data will be automatically
     added to the database on Saturday through the weekly_request function
     which gets called inside each of these functions. So essentially, everything
@@ -403,4 +420,13 @@ def rating_handler():
     outlook['weekly'] = rate_weekly_forecasts()
     outlook['monthly'] = rate_monthly_outlook()
 
+    # Save this data (CST)
+    df = pd.DataFrame(outlook)
+    df['datetime'] = datetime.now() - pd.Timedelta('6 hours')
+    df.to_sql('outlook', conn, if_exists='append')
+
+    
     return outlook
+
+# calculate_raw_db()
+d = forecast_handler()
