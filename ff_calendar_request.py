@@ -306,7 +306,6 @@ def rate_weekly_forecasts():
     for i in df.index:
         event = df.loc[i, 'ccy_event']
         ccy = df.loc[i, 'ccy']
-        weight = df.loc[i, 'weight']
 
         # Ensure there are no nans
         temp = combined[(combined.ccy_event == event)
@@ -359,14 +358,20 @@ def rate_weekly_forecasts():
 
             forecast_rating /= accuracy
 
-        # The last step is to multiply the forecast rating by the events weight
-        forecast_rating *= weight
+        # Mltiply the forecast rating by the events weight
+        forecast_rating *= db.weight[db.ccy_event == event].values[0]
 
         # Finally, save that data
         forecasts_df.loc[i, 'ccy'] = df.loc[i, 'ccy']
         forecasts_df.loc[i, 'ccy_event'] = df.loc[i, 'ccy_event']
         forecasts_df.loc[i, 'event_datetime'] = df.loc[i, 'datetime']
         forecasts_df.loc[i, 'forecast'] = round(forecast_rating, 2)
+
+    # One change is that USD Oil Inventories really affects CAD more,
+    # so if that one exists, make it into a CAD forecast
+    idx = forecasts_df[forecasts_df.ccy_event.str.contains('Crude')].index
+    if len(idx) > 0:
+        forecasts_df.loc[idx, 'ccy'] = 'CAD'
 
     return forecasts_df
 
@@ -485,5 +490,5 @@ def forecast_handler():
 
     return week, month
 
-calculate_raw_db()
+# calculate_raw_db()
 d = forecast_handler()
