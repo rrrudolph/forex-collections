@@ -40,11 +40,6 @@ inverted_weights = [
 ]
 
 
-
-}
-
-
-
 def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     ''' Handles content insertion into spreadsheet. 
     If doing a historical fill, pass month as first arg and year as second. '''
@@ -278,7 +273,7 @@ def weekly_ff_cal_request():
     return df
 
 
-def rate_weekly_forecasts(weights=forecast_weights):
+def rate_weekly_forecasts():
     ''' Calculate the current weeks data by normalizing
     against the database. Returns a dict. '''
 
@@ -311,6 +306,7 @@ def rate_weekly_forecasts(weights=forecast_weights):
     for i in df.index:
         event = df.loc[i, 'ccy_event']
         ccy = df.loc[i, 'ccy']
+        weight = df.loc[i, 'weight']
 
         # Ensure there are no nans
         temp = combined[(combined.ccy_event == event)
@@ -363,8 +359,12 @@ def rate_weekly_forecasts(weights=forecast_weights):
 
             forecast_rating /= accuracy
 
+        # The last step is to multiply the forecast rating by the events weight
+        forecast_rating *= weight
+
         # Finally, save that data
         forecasts_df.loc[i, 'ccy'] = df.loc[i, 'ccy']
+        forecasts_df.loc[i, 'ccy_event'] = df.loc[i, 'ccy_event']
         forecasts_df.loc[i, 'event_datetime'] = df.loc[i, 'datetime']
         forecasts_df.loc[i, 'forecast'] = round(forecast_rating, 2)
 
@@ -485,5 +485,5 @@ def forecast_handler():
 
     return week, month
 
-# calculate_raw_db()
+calculate_raw_db()
 d = forecast_handler()
