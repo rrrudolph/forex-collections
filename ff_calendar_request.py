@@ -27,7 +27,20 @@ forecast_weights = {
     'HPI': 3,
     'PMI': 3,
     'Prelim': 2,
-    'Final': 0.5
+    'Final': 0.5,
+}
+
+inverted_weights = [
+    'Borrowing',
+    'Foriegn Currency Reserves',
+    'Inventories',
+    'Unemployment',
+    'Delinquencies',
+    'Budget',
+]
+
+
+
 }
 
 
@@ -215,12 +228,14 @@ def calculate_raw_db():
         # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
         weight = 1
         for event in forecast_weights:     
-            
             if event in unique_event:
                 weight = forecast_weights[event]
+            
+        for event in inverted_weights:     
+            if event in unique_event:
+                weight *= -1    
        
         df.loc[temp.index, 'weight'] = weight
-
 
         # Refilter the df to calculate the trend of the ccy overall
         ccy = temp.ccy.values[0]
