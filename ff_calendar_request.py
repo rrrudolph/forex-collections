@@ -367,12 +367,6 @@ def rate_weekly_forecasts():
         forecasts_df.loc[i, 'event_datetime'] = df.loc[i, 'datetime']
         forecasts_df.loc[i, 'forecast'] = round(forecast_rating, 2)
 
-    # One change is that USD Oil Inventories really affects CAD more,
-    # so if that one exists, make it into a CAD forecast
-    idx = forecasts_df[forecasts_df.ccy_event.str.contains('Crude')].index
-    if len(idx) > 0:
-        forecasts_df.loc[idx, 'ccy'] = 'CAD'
-
     return forecasts_df
 
 
@@ -482,8 +476,17 @@ def forecast_handler():
         combined.to_sql('outlook', conn, if_exists='replace', index=False)
         return week, month
 
+    # It exists so combine
     combined = pd.concat([historical, combined])
     combined = combined.drop_duplicates(ignore_index=True)
+
+    # One random change is that USD Oil Inventories really affects CAD more,
+    # so if that one exists, make it into a CAD forecast
+    idx = combined[combined.ccy_event.str.contains('Crude')].index
+    latest_cad_monthly_value = combined.monthly[combined.ccy_event.str.contains('CAD')].values[-1]
+    if len(idx) > 0:
+        combined.loc[idx, 'ccy'] = 'CAD'
+        combined.loc[idx, 'monthly'] = latest_cad_monthly_value
 
     if len(combined) > len(historical):
         combined.to_sql('outlook', conn, if_exists='replace', index=False)
