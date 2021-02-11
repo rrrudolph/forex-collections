@@ -1,6 +1,6 @@
 
 
-# Stocks, cryptos, and some indices have been omitted
+# Stocks, and some indices have been omitted
 fx_symbols = [
     'EUR/USD', 'USD/JPY', 'GBP/USD', 'USD/CHF', 
     'EUR/CHF', 'AUD/USD', 'USD/CAD', 'NZD/USD', 
@@ -17,6 +17,7 @@ fx_symbols = [
     'SPX500', 'UK100', 'US30', 'Copper', 
     'USDOLLAR', 'US2000', 'USOil', 'UKOil', 
     'SOYF', 'NGAS', 'WHEATF', 'CORNF', 'XAU/USD', 'XAG/USD',
+    'BTC/USD', 'BCH/USD', 'ETH/USD', 'LTC/USD',
 ]
 
 
