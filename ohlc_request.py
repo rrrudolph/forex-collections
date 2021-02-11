@@ -7,12 +7,15 @@ import requests
 import json
 from datetime import datetime
 import concurrent.futures
-from create_db import setup_conn, path
+from create_db import setup_conn, ohlc_db
 from symbols_lists import fx_symbols, fin_symbols, fx_timeframes, seconds_per_candle
-from tokens import fin_token, fx_token, con
+from tokens import fin_token, fxcm_con
 
-conn, c = setup_conn(path)
+conn, c = setup_conn(ohlc_db)
 
+# Save the current spread for each symbol
+# as data gets requested
+current_spread = {}
 
 
 def _get_latest_ohlc_datetime(symbol, timeframe, c=c):
@@ -96,11 +99,11 @@ def finnhub_ohlc_request(symbol, timeframe, token=fin_token):
         return df
 
 
-def fxcm_ohlc_request(symbol, timeframe, con=con):
+def fxcm_ohlc_request(symbol, timeframe, con=fxcm_con):
     ''' Request candles from fxcm '''
 
     # FXCM requires these in datetime format
-    start = datetime.fromtimestamp(_set_start_time(symbol, timeframe))
+    start = datetime.fromtimestamp(_set_start_time(symbol, timeframe, num_candles=5000))
     end = datetime.fromtimestamp(time.time())
 
     # start = datetime(2021, 1, 27)
@@ -118,6 +121,7 @@ def fxcm_ohlc_request(symbol, timeframe, con=con):
     
     # Save the spread before dropping the Ask columns
     spread = df.askclose.tail(1) - df.bidclose.tail(1)
+    current_spread[symbol] = spread
 
     df = df.rename(columns={
             'bidopen': 'open', 
@@ -260,13 +264,10 @@ def save_raw_ohlc(fx_symbols=fx_symbols, fin_symbols=fin_symbols, conn=conn):
         df = ohlc_request_handler()
 
         if len(df) > 1:
-            print('\n\nWOOOOOO FINAL STAGE!!')
-            print(df)
-            print(len(df))
 
             # Put each symbol's data into its own table
             for symbol in df.symbol.unique():
                 unique_df = df[df.symbol == symbol]
                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
             
-save_raw_ohlc()
+# save_raw_ohlc()
