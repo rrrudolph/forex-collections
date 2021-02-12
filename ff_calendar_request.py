@@ -286,9 +286,8 @@ def rate_weekly_forecasts():
     df = _set_dtypes(df)
     
     # Filter for events with forecasts which are set to drop within the next 48 hours
-    # datetime.now() is actually 6 hours ahead 
-    time_horizon = datetime.now() + pd.Timedelta('42 hours') 
-    current_time = datetime.now() - pd.Timedelta('6 hours')
+    time_horizon = datetime.now() + pd.Timedelta('48 hours') 
+    current_time = datetime.now()
     df = df[
         (df.forecast.notna()) 
         & 
@@ -474,7 +473,7 @@ def forecast_handler():
         historical = pd.read_sql('SELECT * FROM outlook', conn)
     except:
         combined.to_sql('outlook', conn, if_exists='replace', index=False)
-        return week, month
+        return combined
 
     # It exists so combine
     combined = pd.concat([historical, combined])
@@ -491,7 +490,4 @@ def forecast_handler():
     if len(combined) > len(historical):
         combined.to_sql('outlook', conn, if_exists='replace', index=False)
 
-    return week, month
-
-# calculate_raw_db()
-d = forecast_handler()
+    return combined
