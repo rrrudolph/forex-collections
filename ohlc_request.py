@@ -13,9 +13,6 @@ from tokens import fin_token, fxcm_con
 
 conn, c = setup_conn(ohlc_db)
 
-# Save the current spread for each symbol
-# as data gets requested
-current_spread = {}
 
 
 def _get_latest_ohlc_datetime(symbol, timeframe, c=c):
@@ -99,7 +96,7 @@ def finnhub_ohlc_request(symbol, timeframe, token=fin_token):
         return df
 
 
-def fxcm_ohlc_request(symbol, timeframe, con=fxcm_con):
+def fxcm_ohlc_request(symbol, timeframe):
     ''' Request candles from fxcm '''
 
     # FXCM requires these in datetime format
@@ -110,19 +107,15 @@ def fxcm_ohlc_request(symbol, timeframe, con=fxcm_con):
     # end = datetime(2021, 1, 28)
     # Make request
     try:
-        df = con.get_candles(symbol, 
+        df = fxcm_con.get_candles(symbol, 
                             period=fx_timeframes[timeframe],
                             start=start, 
                             stop=end,
         )
     except:
         'fxcm fail'
-        con.close()
+        fxcm_con.close()
     
-    # Save the spread before dropping the Ask columns
-    spread = df.askclose.tail(1) - df.bidclose.tail(1)
-    current_spread[symbol] = spread
-
     df = df.rename(columns={
             'bidopen': 'open', 
             'bidhigh': 'high',
@@ -146,7 +139,7 @@ def _timeframes_to_request():
 
 
     times = {
-        'd': ['1', '5', '15', '60', 'D'],
+        'D': ['1', '5', '15', '60', 'D'],
         0: ['1', '5', '15', '60'],
         15: ['1', '5', '15'],
         5: ['1', '5'],
@@ -159,25 +152,25 @@ def _timeframes_to_request():
     while True:
 
         # Parse the time to get the hour and minute
-        date_and_hour = str(datetime.now()).split(':')
-        hour = int(date_and_hour[0].split(' ')[1])
+        hour = int(datetime.today().hour)
         minute = int(datetime.today().minute)
         second = int(datetime.today().second)
+
         # Get the list of timeframes to request depending on current time
         # starting with the highest timeframes to the lowest
         if hour == 0 and minute == 0:
-            timeframes = times['d']
+            timeframes = times['D']
             return timeframes
         
         # '15' should happen 4 times per hour (for example) so need a modulo function
         for t in [15, 5]:
 
             if t in times:
-                timeframes: times[t]
+                timeframes = times[t]
                 return timeframes
 
             elif minute % t == 0:
-                timeframes: times[t]
+                timeframes = times[t]
                 return timeframes
 
         if second == 0:
@@ -191,10 +184,6 @@ def _fxcm(timeframes):
     fxcm_df = [fxcm_ohlc_request(s, t) for s in fx_symbols for t in timeframes]
     fxcm_df = pd.concat(fxcm_df)
 
-    # Using 'with' caused an error
-    con.close()
-
-    print('_fxcm length of df: ', len(fxcm_df))
     return fxcm_df
 
 
@@ -222,13 +211,12 @@ def _finnhub(timeframes):
         fin_df = [finnhub_ohlc_request(s, t) for s in fin_symbols for t in timeframes]
         fin_df = pd.concat(fin_df)
 
-    print('_finnhub df length: ', len(fin_df))
    
     return fin_df
 
 
 def ohlc_request_handler():
-    ''' Make requests based on the current time '''
+    ''' Continually check the time and if a candle has recently closed request the new data. '''
 
     while True:
         # print('ohlc true')  ok that at least works
@@ -249,25 +237,28 @@ def ohlc_request_handler():
             fxcm_df = _fxcm(timeframes)
             fin_df = _finnhub(timeframes)
 
-            # df = pd.concat([fxcm_df, fin_df])
             df = pd.concat([fxcm_df,fin_df])
 
-            return df
-
-
-def save_raw_ohlc(fx_symbols=fx_symbols, fin_symbols=fin_symbols, conn=conn):
-    ''' Update the database with ohlc data '''
-
-    while True:
-
-        df = pd.DataFrame()
-        df = ohlc_request_handler()
-
-        if len(df) > 1:
-
-            # Put each symbol's data into its own table
+            # Save the data to the database
             for symbol in df.symbol.unique():
                 unique_df = df[df.symbol == symbol]
                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
+
+ohlc_request_handler()
+
+# def save_raw_ohlc(fx_symbols=fx_symbols, fin_symbols=fin_symbols, conn=conn):
+#     ''' Update the database with ohlc data. Note, there is no con.close() 
+#     present within this function. '''
+
+#     while True:
+
+#         df = pd.DataFrame()
+#         df = ohlc_request_handler()
+
+#         if len(df) > 1:
+
+#             # Put each symbol's data into its own table
+#             for symbol in df.symbol.unique():
+#                 unique_df = df[df.symbol == symbol]
+#                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
             
-# save_raw_ohlc()
