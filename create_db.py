@@ -4,6 +4,7 @@ from symbols_lists import fx_symbols, fin_symbols
 # This is the home location for directory paths. 
 ohlc_db = r'/home/r/Documents/ohlc.db'
 econ_db = r'/home/r/Documents/economic_data.db'
+setups = r'/home/r/Documents/setups.db'
 
 
 def setup_conn(path):
@@ -84,5 +85,5 @@ def make_db_tables(fx_symbols, fin_symbols):
     conn.commit()
     conn.close()
 
-if __name__ == "__main__":
-    make_db_tables(fx_symbols, fin_symbols)
+# if __name__ == "__main__":
+#     make_db_tables(fx_symbols, fin_symbols)
