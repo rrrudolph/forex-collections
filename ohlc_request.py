@@ -18,18 +18,18 @@ conn, c = setup_conn(ohlc_db)
 def _get_latest_ohlc_datetime(symbol, timeframe, c=c):
     ''' Get the last ohlc timestamp for each symbol '''
 
-    params = (symbol, timeframe)
     # If the db is blank this will error with 'NoneType'
     try:
-        c.execute('''SELECT datetime 
+        c.execute(f'''SELECT datetime 
                                 FROM ohlc
-                                WHERE symbol == ?
-                                AND timeframe == ?
+                                WHERE symbol = {symbol}
+                                AND timeframe = {timeframe}
                                 ORDER BY datetime DESC
-                                LIMIT 1''', (params))
-        return int(c.fetchone()[0])
-    except: TypeError
-    pass
+                                LIMIT 1''')
+        return c.fetchone()[0]
+    
+    except TypeError:
+        pass
 
 
 def _set_start_time(symbol, timeframe, num_candles=999):
