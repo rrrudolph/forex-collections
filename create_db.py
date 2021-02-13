@@ -4,7 +4,7 @@ from symbols_lists import fx_symbols, fin_symbols
 # This is the home location for directory paths. 
 ohlc_db = r'/home/r/Documents/ohlc.db'
 econ_db = r'/home/r/Documents/economic_data.db'
-setups = r'/home/r/Documents/setups.db'
+setups_db = r'/home/r/Documents/setups.db'
 
 
 def setup_conn(path):
