@@ -455,39 +455,41 @@ def forecast_handler():
     which gets called inside each of these functions. So essentially, everything
     is getting handled behind the scenes. '''
 
-    week = rate_weekly_forecasts()
-    month = rate_monthly_outlook()
+    while True:
+        week = rate_weekly_forecasts()
+        month = rate_monthly_outlook()
 
-    # This is to combine the dfs and save the data 
-    # (although it will only list ccy's with forecasts)
-    combined = week.copy()
-    ccys = week.ccy.unique()
-    for ccy in ccys:
-        index = week[week.ccy == ccy].index
-        monthly = month.monthly[month.ccy == ccy].values[0]
-        combined.loc[index, 'monthly'] = monthly
-    
-    # But in order to not fill with duplicates super fast, read it in
-    # (assuming it exists)
-    try: 
-        historical = pd.read_sql('SELECT * FROM outlook', conn)
-    except:
-        combined.to_sql('outlook', conn, if_exists='replace', index=False)
-        return combined
+        # This is to combine the dfs and save the data 
+        # (although it will only list ccy's with forecasts)
+        combined = week.copy()
+        ccys = week.ccy.unique()
+        for ccy in ccys:
+            index = week[week.ccy == ccy].index
+            monthly = month.monthly[month.ccy == ccy].values[0]
+            combined.loc[index, 'monthly'] = monthly
+        
+        # But in order to not fill with duplicates super fast, read it in
+        # (assuming it exists)
+        try: 
+            historical = pd.read_sql('SELECT * FROM outlook', conn)
+        except:
+            combined.to_sql('outlook', conn, if_exists='replace', index=False)
+            return combined
 
-    # It exists so combine
-    combined = pd.concat([historical, combined])
-    combined = combined.drop_duplicates(ignore_index=True)
+        # It exists so combine
+        combined = pd.concat([historical, combined])
+        combined = combined.drop_duplicates(ignore_index=True)
 
-    # One random change is that USD Oil Inventories really affects CAD more,
-    # so if that one exists, make it into a CAD forecast
-    idx = combined[combined.ccy_event.str.contains('Crude')].index
-    latest_cad_monthly_value = combined.monthly[combined.ccy_event.str.contains('CAD')].values[-1]
-    if len(idx) > 0:
-        combined.loc[idx, 'ccy'] = 'CAD'
-        combined.loc[idx, 'monthly'] = latest_cad_monthly_value
+        # One random change is that USD Oil Inventories really affects CAD more,
+        # so if that one exists, make it into a CAD forecast
+        idx = combined[combined.ccy_event.str.contains('Crude')].index
+        latest_cad_monthly_value = combined.monthly[combined.ccy_event.str.contains('CAD')].values[-1]
+        if len(idx) > 0:
+            combined.loc[idx, 'ccy'] = 'CAD'
+            combined.loc[idx, 'monthly'] = latest_cad_monthly_value
 
-    if len(combined) > len(historical):
-        combined.to_sql('outlook', conn, if_exists='replace', index=False)
+        if len(combined) > len(historical):
+            combined.to_sql('outlook', conn, if_exists='replace', index=False)
 
-    return combined
+        # Scan again in 1 hour
+        time.sleep(60*60)
