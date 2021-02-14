@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import sqlite3
 import time
 import fxcmpy
@@ -226,14 +227,6 @@ def ohlc_request_handler():
             print('timeframes inside request handler:')
             print(timeframes)
 
-            # Create separate threads for each server
-            # with concurrent.futures.ThreadPoolExecutor() as executor:
-            #     t1 = executor.submit(_fxcm(timeframes))
-            #     t2 = executor.submit(_finnhub(timeframes))
-            
-            # fxcm_df = t1.result()
-            # fin_df = t2.result()
-
             fxcm_df = _fxcm(timeframes)
             fin_df = _finnhub(timeframes)
 
@@ -244,21 +237,32 @@ def ohlc_request_handler():
                 unique_df = df[df.symbol == symbol]
                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
 
-ohlc_request_handler()
+def _format_mt5_data(df):
+    df = df[:-1] # sometimes calculating the current bar throws errors
+    df = df.rename(columns={'time': 'dt', 'tick_volume': 'volume'})
+    df.dt = pd.to_datetime(df.dt, unit='s')
+    df['pattern'] = np.nan
+    df['peak'] = np.nan
 
-# def save_raw_ohlc(fx_symbols=fx_symbols, fin_symbols=fin_symbols, conn=conn):
-#     ''' Update the database with ohlc data. Note, there is no con.close() 
-#     present within this function. '''
+    return df
 
-#     while True:
 
-#         df = pd.DataFrame()
-#         df = ohlc_request_handler()
+def mt5_ohlc_request(symbol, timeframe, num_candles=70):
+    ''' Since this data is already stored locally, only request the minimum
+    required for trade scanning. '''
 
-#         if len(df) > 1:
+     # If data request fails, re-attempt once
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
+    except:
+        time.sleep(0.25)
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
+        except:
+            print(f'failed to retrieve {symbol} {timeframe} data')
+            return None
 
-#             # Put each symbol's data into its own table
-#             for symbol in df.symbol.unique():
-#                 unique_df = df[df.symbol == symbol]
-#                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
-            
+    df = pd.DataFrame(rates)
+    df = _format_mt5_data(df)
+
+    return df
