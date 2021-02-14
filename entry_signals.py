@@ -1,4 +1,4 @@
-
+import MetaTrader5 as mt5
 import logging
 import sqlite3
 import pandas as pd
@@ -19,6 +19,19 @@ setups_con = sqlite3.connect(setups)
 df = pd.DataFrame()
 timeframe = None
 symbol = None
+
+def spread_is_ok(df, symbol):
+
+    symbol_info=mt5.symbol_info(symbol)
+    i = df.tail(1).index
+
+    # Get the spread in pips rather than points
+    spread = symbol_info.spread / (10 ** symbol_info.digits)
+
+    if spread <= df.loc[i, 'atr'] * 1/3:
+        return True
+    else:
+        return False
 
 ##### Format functions ######
 def format_data(df):
@@ -426,7 +439,7 @@ def _trade_scanner(timeframe):
         #     print('error:', e)
         #     bot
 
-def _trade_scan_handler():
+def trade_scan_handler():
     ''' A continuous loop that checks the database for the last
     timestamp of each timeframe.  If a newer timestamp appears
     than what's been saved, the database has been updated and 
