@@ -151,22 +151,27 @@ def build_historical_db(year_start=2012):
     years = range(year_start, current_year + 1)
 
     for year in years:
+        print(f'{year}...')
         for month in months.values():
 
             if month == current_month and year == current_year:
-                sys.exit()
+                break
+
+            print(f' -{month.title()}')
 
             # Request data
             df = update_gsheet_cell(month, year, historical_fill=True)
             time.sleep(1)
 
-            # Clean and format a little
-            # It's possible that the gsheet didn't load in time, if that happens pause and retry
-            try:
-                df = clean_data(df, year, remove_non_numeric=False)
-            except IndexError:
-                time.sleep(3)
-                df = clean_data(df, year, remove_non_numeric=False)
+            while len(df) < 10:
+                time.sleep(2) 
+                df = update_gsheet_cell(month, year, historical_fill=True)
+
+                print('Google is throttling requests. Sleeping for 1min.')
+                time.sleep(60) 
+                df = update_gsheet_cell(month, year, historical_fill=True)
+
+            df = clean_data(df, year, remove_non_numeric=False)
 
             # Update database
             save_ff_cal_to_db(df)
@@ -495,22 +500,27 @@ def forecast_handler():
         time.sleep(60*60)
 
 
+
+
+
 # When this module gets imported, have it run this to verify that the 
 # database and tables exists. If they don't, run the needed functions
 
 def verify_db_tables_exist():
-    print('ff_cal_request module is ensuring the db tables exist')
     try: 
         first = pd.read_sql('SELECT * FROM ff_cal_raw LIMIT 1', econ_con)
     except:
+        print(f"\nCouldn't locate the db table 'ff_cal_raw' at {econ_db}.")
+        print('Going to build the historical db. This will take a few mins.')
         try:
             build_historical_db()
-        except:
-            print("Can't access the sqlite database or can't create historical db.")
+        except Exception as e:
+            print(e)
             return None
     try:
         second = pd.read_sql('SELECT * FROM ff_cal LIMIT 1', econ_con)
     except:
+        print('\nNow just a few calculations...')
         calculate_raw_db()
 
     try:
@@ -533,5 +543,30 @@ def verify_db_tables_exist():
         
 
         combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
+        print('Done!')
+
+# Unforunately it seems like a new process gets spawned as those functions run
+# which allows the main file that had been called to continue on with its
+# tasks while this one finishes.  Which ends up causing an error because 
+# the database hasn't had time to build.  So have to call this function manually..
 
 verify_db_tables_exist()
+
+
+
+# build_historical_db()
+# calculate_raw_db()
+# week = rate_weekly_forecasts()
+# month = rate_monthly_outlook()
+
+# # This is to combine the dfs and save the data 
+# # (although it will only list ccy's with forecasts)
+# combined = week.copy()
+# ccys = week.ccy.unique()
+# for ccy in ccys:
+#     index = week[week.ccy == ccy].index
+#     monthly = month.monthly[month.ccy == ccy].values[0]
+#     combined.loc[index, 'monthly'] = monthly
+
+
+# combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
