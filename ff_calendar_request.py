@@ -6,10 +6,10 @@ import sys
 import time
 import sqlite3
 from datetime import datetime
-from create_db import setup_conn, econ_db  # local path to the database 
+from create_db import econ_db  # local path to the database 
 from tokens import ff_cal_sheet
 
-conn, c = setup_conn(econ_db)
+econ_con = sqlite3.connect(econ_db)
 
 
 forecast_weights = {
@@ -172,7 +172,7 @@ def build_historical_db(year_start=2012):
             save_ff_cal_to_db(df)
 
     #  :/
-    conn.close()
+    econ_con.close()
         
 
 def calculate_raw_db():
@@ -181,7 +181,7 @@ def calculate_raw_db():
     when new data is added, and only needs to look at the previous 7 months. '''
 
     # Open file and prepare for calculations
-    df = pd.read_sql('SELECT * FROM ff_cal_raw', conn)
+    df = pd.read_sql('SELECT * FROM ff_cal_raw', econ_con)
     df = run_regex(df)
     df = _set_dtypes(df)
 
@@ -245,7 +245,7 @@ def calculate_raw_db():
 
 
     # Overwrite current database file
-    df.to_sql("ff_cal", conn, if_exists='replace', index=False)
+    df.to_sql("ff_cal", econ_con, if_exists='replace', index=False)
 
 
 def weekly_ff_cal_request():
@@ -279,7 +279,7 @@ def rate_weekly_forecasts():
 
     # While my database is still small it makes more sense to
     # read the whole thing into memory rather than make queries, so...
-    db = pd.read_sql('SELECT * FROM ff_cal', conn)
+    db = pd.read_sql('SELECT * FROM ff_cal', econ_con)
     db = _set_dtypes(db)
 
     df = weekly_ff_cal_request()
@@ -374,7 +374,7 @@ def rate_monthly_outlook():
     using a few select events.  Returns a dict'''
 
     # Load data and combine
-    db = pd.read_sql('SELECT * FROM ff_cal', conn)
+    db = pd.read_sql('SELECT * FROM ff_cal', econ_con)
     df = weekly_ff_cal_request()
     df = pd.concat([db, df])
 
@@ -446,7 +446,7 @@ def rate_monthly_outlook():
 def save_ff_cal_to_db(df):
     ''' Write the data to the database. '''
 
-    df.to_sql('ff_cal_raw', conn, if_exists='append', index=False)
+    df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
 
 
 def forecast_handler():
@@ -471,9 +471,9 @@ def forecast_handler():
         # But in order to not fill with duplicates super fast, read it in
         # (assuming it exists)
         try: 
-            historical = pd.read_sql('SELECT * FROM outlook', conn)
+            historical = pd.read_sql('SELECT * FROM outlook', econ_con)
         except:
-            combined.to_sql('outlook', conn, if_exists='replace', index=False)
+            combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
             return combined
 
         # It exists so combine
@@ -489,7 +489,49 @@ def forecast_handler():
             combined.loc[idx, 'monthly'] = latest_cad_monthly_value
 
         if len(combined) > len(historical):
-            combined.to_sql('outlook', conn, if_exists='replace', index=False)
+            combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
 
         # Scan again in 1 hour
         time.sleep(60*60)
+
+
+# When this module gets imported, have it run this to verify that the 
+# database and tables exists. If they don't, run the needed functions
+
+def verify_db_tables_exist():
+    print('ff_cal_request module is ensuring the db tables exist')
+    try: 
+        first = pd.read_sql('ff_cal_raw', econ_con)
+    except:
+        try:
+            build_historical_db()
+        except:
+            print("Can't access the sqlite database or can't create historical db.")
+            return None
+    try:
+        second = pd.read_sql('ff_cal', econ_con)
+    except:
+        calculate_raw_db()
+
+    try:
+        third = pd.read_sql('outlook', econ_con)
+    except:
+
+        # This is essentially a simplified forecast_handler() 
+        
+        week = rate_weekly_forecasts()
+        month = rate_monthly_outlook()
+
+        # This is to combine the dfs and save the data 
+        # (although it will only list ccy's with forecasts)
+        combined = week.copy()
+        ccys = week.ccy.unique()
+        for ccy in ccys:
+            index = week[week.ccy == ccy].index
+            monthly = month.monthly[month.ccy == ccy].values[0]
+            combined.loc[index, 'monthly'] = monthly
+        
+
+        combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
+
+verify_db_tables_exist()
