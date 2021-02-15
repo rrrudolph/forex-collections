@@ -501,7 +501,7 @@ def forecast_handler():
 def verify_db_tables_exist():
     print('ff_cal_request module is ensuring the db tables exist')
     try: 
-        first = pd.read_sql('ff_cal_raw', econ_con)
+        first = pd.read_sql('SELECT * FROM ff_cal_raw LIMIT 1', econ_con)
     except:
         try:
             build_historical_db()
@@ -509,12 +509,12 @@ def verify_db_tables_exist():
             print("Can't access the sqlite database or can't create historical db.")
             return None
     try:
-        second = pd.read_sql('ff_cal', econ_con)
+        second = pd.read_sql('SELECT * FROM ff_cal LIMIT 1', econ_con)
     except:
         calculate_raw_db()
 
     try:
-        third = pd.read_sql('outlook', econ_con)
+        third = pd.read_sql('SELECT * FROM outlook LIMIT 1', econ_con)
     except:
 
         # This is essentially a simplified forecast_handler() 
