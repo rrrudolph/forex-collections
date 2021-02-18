@@ -1,32 +1,51 @@
 
 
 # Stocks, and some indices have been omitted
-fx_symbols = [
+fx_symbols = {
+    'majors': [
     'EUR/USD', 'USD/JPY', 'GBP/USD', 'USD/CHF', 
     'EUR/CHF', 'AUD/USD', 'USD/CAD', 'NZD/USD', 
     'EUR/GBP', 'EUR/JPY', 'GBP/JPY', 'CHF/JPY', 
     'GBP/CHF', 'EUR/AUD', 'EUR/CAD', 'AUD/CAD', 
     'AUD/JPY', 'CAD/JPY', 'NZD/JPY', 'GBP/CAD', 
-    'GBP/NZD', 'GBP/AUD', 'AUD/NZD', 'USD/SEK', 
-    'EUR/SEK', 'EUR/NOK', 'USD/NOK', 'USD/MXN', 
-    'AUD/CHF', 'EUR/NZD', 'USD/ZAR', 'USD/HKD', 
-    'ZAR/JPY', 'USD/TRY', 'EUR/TRY', 'NZD/CHF', 
-    'CAD/CHF', 'NZD/CAD', 'TRY/JPY', 'USD/ILS', 
+    'GBP/NZD', 'GBP/AUD', 'AUD/NZD', 'AUD/CHF',
+    'NZD/CHF', 'CAD/CHF', 'NZD/CAD', 'EUR/NZD',
+    ],
+    'others': [
+    'USD/SEK', 'EUR/SEK', 'EUR/NOK', 'USD/NOK', 'USD/MXN', 
+    'USD/ZAR', 'USD/HKD', 
+    'ZAR/JPY', 'USD/TRY', 'EUR/TRY',  
+     'TRY/JPY', 'USD/ILS', 
     'USD/CNH', 'AUS200', 'ESP35', 'FRA40', 
     'GER30', 'HKG33', 'JPN225', 'NAS100', 
     'SPX500', 'UK100', 'US30', 'Copper', 
     'USDOLLAR', 'US2000', 'USOil', 'UKOil', 
     'SOYF', 'NGAS', 'WHEATF', 'CORNF', 'XAU/USD', 'XAG/USD',
-    'BTC/USD', 'BCH/USD', 'ETH/USD', 'LTC/USD',
-]
+    'BTC/USD', 'BCH/USD', 'ETH/USD', 'LTC/USD'
+    ]
+}
 
-mt5_symbols = [
-    'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 
-    'AUDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 
-    'CHFJPY', 'EURGBP', 'EURAUD', 'EURCHF', 'EURJPY', 
-    'EURNZD', 'EURCAD', 'GBPCHF', 'GBPJPY', 'CADCHF', 
-    'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
-    'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDSGD', 'EURPLN', 
+index_ccys = [
+    'USD',
+    'EUR',
+    'GBP',
+    'JPY',
+    'AUD',
+    'NZD',
+    'CAD',
+    'CHF',
+]
+mt5_symbols = {
+    'majors': [
+        'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 
+        'AUDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 
+        'CHFJPY', 'EURGBP', 'EURAUD', 'EURCHF', 'EURJPY', 
+        'EURNZD', 'EURCAD', 'GBPCHF', 'GBPJPY', 'CADCHF', 
+        'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
+        'NZDCHF', 'NZDJPY', 'NZDUSD',
+    ],
+    'others': [
+    'USDSGD', 'EURPLN', 
     'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
     'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
     'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 'DE30', 
@@ -34,7 +53,8 @@ mt5_symbols = [
     'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
     'XNGUSD', 'XTIUSD', 'BTCUSD', 'BCHUSD', 
     'DSHUSD', 'ETHUSD', 'LTCUSD',
-]
+    ]
+}
 
 # mt5_symbols = [  -- all --
 #     'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 

@@ -7,7 +7,7 @@ import time
 import sqlite3
 from datetime import datetime
 from create_db import econ_db  # local path to the database 
-from tokens import ff_cal_sheet
+from tokens import ff_cal_sheet, forecast_sheet
 
 econ_con = sqlite3.connect(econ_db)
 
@@ -471,9 +471,14 @@ def forecast_handler():
         for ccy in ccys:
             index = week[week.ccy == ccy].index
             monthly = month.monthly[month.ccy == ccy].values[0]
+           
             combined.loc[index, 'monthly'] = monthly
-        
-        # But in order to not fill with duplicates super fast, read it in
+            combined = combined.rename(columns={'weekly':'48hr'})
+
+        # upload this weekly data to a gsheet
+        forecast_sheet.update([combined.columns.values.tolist()] + combined.values.tolist())
+
+        # Add this data to the database But in order to not fill with duplicates super fast, read it in
         # (assuming it exists)
         try: 
             historical = pd.read_sql('SELECT * FROM outlook', econ_con)
@@ -496,6 +501,8 @@ def forecast_handler():
         if len(combined) > len(historical):
             combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
 
+        # Update 
+        
         # Scan again in 1 hour
         time.sleep(60*60)
 
@@ -552,21 +559,3 @@ def verify_db_tables_exist():
 
 verify_db_tables_exist()
 
-
-
-# build_historical_db()
-# calculate_raw_db()
-# week = rate_weekly_forecasts()
-# month = rate_monthly_outlook()
-
-# # This is to combine the dfs and save the data 
-# # (although it will only list ccy's with forecasts)
-# combined = week.copy()
-# ccys = week.ccy.unique()
-# for ccy in ccys:
-#     index = week[week.ccy == ccy].index
-#     monthly = month.monthly[month.ccy == ccy].values[0]
-#     combined.loc[index, 'monthly'] = monthly
-
-
-# combined.to_sql('outlook', econ_con, if_exists='replace', index=False)

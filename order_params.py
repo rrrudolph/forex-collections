@@ -33,12 +33,10 @@ class Entries():
         return lot_size
 
 
-    def _expiration(self, df, i, num_candles=4):
+    def _expiration(self, timeframe, num_candles=4):
         ''' Set the order expiration at n candles, so it will depend on the timeframe. '''
 
-        timeframe = df.loc[i, 'timeframe']
-
-        if timeframe == 'D':
+        if timeframe == 16408: # daily
             t_delta = pd.Timedelta('1 day')
         else:
             t_delta = pd.Timedelta(f'{timeframe} min')
@@ -48,24 +46,24 @@ class Entries():
         return e
 
 
-    def _increase_volume_if_forecast(self, df, i, forecast_df):
+    def _increase_volume_if_forecast(self, df, symbol):
         ''' If there are forecasts that contribute to the trade's liklihood 
         of working out, increase the lot size.  There's definitely more to 
         be coded here about how to interpret forecast data. '''
 
-        forecast_df = pd.read_sql('outlook', econ_con)
 
+        forecast_df = pd.read_sql('SELECT * FROM outlook', econ_con)
 
-        base_ccy = df.loc[i, 'symbol'][:3]
-        counter_ccy = df.loc[i, 'symbol'][-3:]
-
+        base_ccy = symbol[:3]
+        counter_ccy = symbol[-3:]
 
         # Check the forecasts
         base_sum = sum(forecast_df.weekly[forecast_df.ccy == base_ccy])
         counter_sum = sum(forecast_df.weekly[forecast_df.ccy == counter_ccy])
 
-        # Send the forecast data to telegram
-        _send_telegram_forecast(f'{base_ccy}:{base_sum}  {counter_ccy}:{counter_sum}')
+        if base_sum or counter_sum:
+            # Send the forecast data to telegram
+            _send_telegram_forecast(f'{base_ccy}:{base_sum}  {counter_ccy}:{counter_sum}')
 
         # Check if trade is long or short
         if df.loc[i, 'pattern'][-2:] == '_b':
@@ -100,7 +98,7 @@ class Entries():
         return x, trade_type
 
 
-    def _enter_trade(self, df, i, symbol, timeframe):
+    def enter_trade(self, df, i, symbol, timeframe):
         ''' Read from the df of current setups and set lot size based on 
         the forecast rating for the currencies in the symbol. '''
 
