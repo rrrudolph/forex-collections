@@ -101,19 +101,22 @@ def clean_data(df, year, remove_non_numeric=True):
             df.columns[8]: 'previous', 
             df.columns[9]: 'graph', 
             })
+    
+    # The main 2 filters
+    df = df[df.event != '']
+    df = df[df.previous != '']
+
+    
     df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
             
     # Convert blanks to nans and then fill               
-    df = df[~df.time.str.contains('[TABLE]')] # this really screwed me over 
     df.date[df.date == ''] = np.nan
     df.date = df.date.fillna(method='ffill')         
     df.time[df.time == ''] = np.nan
     df.time = df.time.fillna(method='ffill')
 
+
     # Remove some unwanted rows
-    df = df.loc[1:, :]
-    df = df[df.time.str.contains(':')]
-    df = df[df.previous != '']
     error_causers = 'Spanish|Italian|French|Bond|Data|Vote|MPC'
     df = df[~df.event.str.contains(error_causers)]
 
@@ -326,6 +329,7 @@ def rate_weekly_forecasts():
                         &
                         (combined.previous.notna())
                         ]
+
         if len(temp) < 2:
             print(f'Less than 2 events found for {event}.')
         # Normalize forecast and previous 
@@ -369,16 +373,10 @@ def rate_weekly_forecasts():
                                 
         # For newish events there won't yet be an accuracy value                        
         if len(accuracy) > 0:  
-
             forecast_rating /= accuracy.values[0]
 
         # Mltiply the forecast rating by the events weight
-        weight = db.weight[db.ccy_event == event]
-
-        try:
-            forecast_rating *= db.weight[db.ccy_event == event].values[0]
-        except:
-           print(event)
+        forecast_rating *= db.weight[db.ccy_event == event].values[0]
 
         # Finally, save that data
         forecasts_df.loc[i, 'ccy'] = df.loc[i, 'ccy']
@@ -572,7 +570,7 @@ def verify_db_tables_exist():
 # tasks while this one finishes.  Which ends up causing an error because 
 # the database hasn't had time to build.  So have to call this function manually..
 
-# verify_db_tables_exist()
+verify_db_tables_exist()
 
 # data = ff_cal_sheet.get_all_values() # list of lists
 # df = pd.DataFrame(data)
