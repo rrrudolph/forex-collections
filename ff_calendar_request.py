@@ -208,11 +208,11 @@ def calculate_raw_db():
 
         if len(temp) > 2:
 
-            # Get the recent accuracy of the forecast as a percentage (returns lots of inf's)
-            accuracy = temp.actual / temp.forecast 
-            accuracy = accuracy.replace([-np.Inf, np.Inf], 0.001)
-            df.loc[temp.index, 'accuracy'] = round(accuracy.rolling(6).mean(), 2)
-
+            # Get the recent accuracy of the forecast (a positive number means forecast missed above)
+            normd_actual = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+            normd_forecast = (temp.forecast - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+            accuracy = (normd_forecast - normd_actual).rolling(6).mean()
+            df.loc[temp.index, 'accuracy'] = round(accuracy, 3)
 
         # Refilter the df to calculate the trend of actuals
         temp = df[(df.ccy_event == unique_event)
@@ -221,9 +221,8 @@ def calculate_raw_db():
                   ]
 
         # Get the recent trend of the actuals (normalized)
-        normd = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
-        trend = normd.diff().rolling(4).mean()
-        df.loc[temp.index, 'trend'] = trend
+        trend = normd_actual.diff().rolling(4).mean()
+        df.loc[temp.index, 'trend'] = round(trend, 3)
         
         # Apply weights (certain forecast events are more important than others)
         # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
@@ -247,7 +246,7 @@ def calculate_raw_db():
 
         # Get the recent trend of the actuals (overall by currency)
         ccy_trend = ccy_trend.rolling(7).mean()
-        df.loc[temp.index, 'ccy_trend'] = ccy_trend
+        df.loc[temp.index, 'ccy_trend'] = round(ccy_trend, 3)
 
 
     # Overwrite current database file
@@ -362,15 +361,24 @@ def rate_weekly_forecasts():
         if both_positive or both_negative:
             forecast_rating *= 1.25
 
-        # Divide by the forecasts accuracy (perfect accuracy is 1)
-        accuracy = db.accuracy[(db.ccy_event == event) 
+        # Get the accuracy range
+        accuracies = db.accuracy[(db.ccy_event == event) 
                                 &
-                               (db.accuracy.notna())
-                               ].tail(1)
-                                
+                               (db.accuracy.notna())]
+
         # For newish events there won't yet be an accuracy value                        
-        if len(accuracy) > 0:  
-            forecast_rating /= accuracy.values[0]
+        if len(accuracies) > 0:  
+
+            # Create some bins (remember, perfect accuracy is 0)
+            bins = accuracies.describe()
+
+            accuracy = accuracies.tail(1).values[0]
+            if bins['25%'] < accuracy < bins['75%']:
+                accuracy = 1.5
+            else:
+                accuracy = 0.5
+
+            forecast_rating *= accuracy
 
         # Mltiply the forecast rating by the events weight
         forecast_rating *= db.weight[db.ccy_event == event].values[0]
@@ -481,10 +489,14 @@ def forecast_handler():
             monthly = month.monthly[month.ccy == ccy].values[0]
            
             combined.loc[index, 'monthly'] = monthly
-            combined = combined.rename(columns={'weekly':'48hr'})
+        
+        # rearrange
+        combined = combined[['event_datetime', 'ccy', 'ccy_event', 'forecast', 'monthly']]
 
-        # upload this weekly data to a gsheet
-        forecast_sheet.update([combined.columns.values.tolist()] + combined.values.tolist())
+        # upload this weekly data to a gsheet (must be json serializable)
+        ghseet = combined.drop(columns=['ccy'])
+        ghseet.event_datetime = ghseet.event_datetime.astype(str)
+        forecast_sheet.update([ghseet.columns.values.tolist()] + ghseet.values.tolist())
 
         # Add this data to the database But in order to not fill with duplicates super fast, read it in
         # (assuming it exists)
@@ -565,7 +577,9 @@ def verify_db_tables_exist():
 # tasks while this one finishes.  Which ends up causing an error because 
 # the database hasn't had time to build.  So have to call this function manually..
 
-verify_db_tables_exist()
+# verify_db_tables_exist()
+calculate_raw_db()
+forecast_handler()
 
 # data = ff_cal_sheet.get_all_values() # list of lists
 # df = pd.DataFrame(data)
