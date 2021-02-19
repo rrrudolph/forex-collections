@@ -300,7 +300,6 @@ def rate_weekly_forecasts():
         & 
         (df.datetime > current_time)
     ]
-    
     # Combine the df's to normalize and stuff
     combined = pd.concat([db, df])
 
@@ -480,23 +479,27 @@ def forecast_handler():
         week = rate_weekly_forecasts()
         month = rate_monthly_outlook()
 
+
         # This is to combine the dfs and save the data 
         # (although it will only list ccy's with forecasts)
         combined = week.copy()
         ccys = week.ccy.unique()
         for ccy in ccys:
             index = week[week.ccy == ccy].index
-            monthly = month.monthly[month.ccy == ccy].values[0]
+            monthly = month.monthly[month.ccy == ccy].values
            
-            combined.loc[index, 'monthly'] = monthly
+            if monthly:
+                combined.loc[index, 'monthly'] = monthly[0]
         
         # rearrange
         combined = combined[['event_datetime', 'ccy', 'ccy_event', 'forecast', 'monthly']]
 
+        # in case any monthlys come up nan set to 0
+        combined = combined.replace(np.nan, 0)
         # upload this weekly data to a gsheet (must be json serializable)
-        ghseet = combined.drop(columns=['ccy'])
-        ghseet.event_datetime = ghseet.event_datetime.astype(str)
-        forecast_sheet.update([ghseet.columns.values.tolist()] + ghseet.values.tolist())
+        gsheet = combined.drop(columns=['ccy'])
+        gsheet.event_datetime = gsheet.event_datetime.astype(str)
+        forecast_sheet.update([gsheet.columns.values.tolist()] + gsheet.values.tolist())
 
         # Add this data to the database But in order to not fill with duplicates super fast, read it in
         # (assuming it exists)
@@ -578,10 +581,11 @@ def verify_db_tables_exist():
 # the database hasn't had time to build.  So have to call this function manually..
 
 # verify_db_tables_exist()
-calculate_raw_db()
 forecast_handler()
 
 # data = ff_cal_sheet.get_all_values() # list of lists
 # df = pd.DataFrame(data)
 # df = clean_data(df, 2021)
 # print(df.iloc[-100:-50])
+
+
