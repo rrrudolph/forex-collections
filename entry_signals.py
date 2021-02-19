@@ -5,28 +5,33 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import time
-from create_db import ohlc_db, setups
-from symbols_lists import fx_symbols
-from tokens import fxcm_con
+from create_db import econ_db
+from symbols_lists import mt5_symbols
+from ohlc_request import mt5_ohlc_request
+from order_params import enter_trade
+from tokens import bot
+
 # import sys
 # sys.path.append('C:/Program Files (x86)/Python38-32/code')
 # import format_functions
 # import trades
 
-sql_con = sqlite3.connect(ohlc_db)
-setups_con = sqlite3.connect(setups)
+
+def send_trade_alert(symbol, timeframe, pattern, bot=bot):
+    bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
+    
+econ_con = sqlite3.connect(econ_db)
 
 df = pd.DataFrame()
 timeframe = None
 symbol = None
 
-def spread_is_ok(df, symbol):
+def spread_is_ok(df, i, symbol):
 
-    symbol_info=mt5.symbol_info(symbol)
-    i = df.tail(1).index
+    info = mt5.symbol_info(symbol)
 
     # Get the spread in pips rather than points
-    spread = symbol_info.spread / (10 ** symbol_info.digits)
+    spread = info.spread * info.point
 
     if spread <= df.loc[i, 'atr'] * 1/3:
         return True
@@ -39,7 +44,6 @@ def format_data(df):
     df = df.rename(columns={'time': 'dt', 'tick_volume': 'volume'})
     df.dt = pd.to_datetime(df.dt, unit='s')
     df['pattern'] = np.nan
-    df['peak'] = np.nan
 
     return df
 
@@ -371,73 +375,44 @@ def stoprun_s(df):
                                 save_trade_info(df, i)
 
 
-
-def _trade_scanner(timeframe):
+def trade_scanner(timeframe):
     ''' Read the database for the current timeframe. This function gets
     called within a loop so only a single timeframe will be passed. '''
-
-    trades_df = pd.DataFrame()
-    for symbol in fx_symbols:
-        df = pd.read_sql(fr"SELECT * FROM '{symbol}' WHERE timeframe={timeframe}", sql_con)
-        if len(df)>50:
-            df = df.drop_duplicates()
-            # print(len(df))
-            # print(symbol, timeframe, datetime.now())
-            df['pattern'] = np.nan
-            atr(df)
-            hlc3(df)
-            set_ema(df)
-            auction_vol(df)
-            avg_vol(df)
-            pinbar(df)
-            avg_bar_size(df)
-            find_peaks(df)
-            fade_b(df)
-            fade_s(df)
-            spring_b(df) 
-            spring_s(df)
-            stoprun_b(df)
-            stoprun_s(df)
-
-            pattern = df.pattern.tail(1).values[0]
-            if pattern:
-                
-                print(pattern, 'found')
-                df = df[['datetime', 'symbol', 'timeframe', 'pattern', 'entry', 'tp1', 'tp2', 'sl']].tail(1)
-                trades_df.append(df)
     
-    return trades_df
-            # df = df.tail(30)
-            # if len(df[df.pattern.notna()]) > 0:  # why was I using 'not pd.isnull' here?
-            #     print(df.pattern[df.pattern.notna()].values[0], 'found')
-            #     print(df.datetime[df.pattern.notna()].values[0])
-            #     print(df.symbol[df.pattern.notna()].values[0])
-            #     print(df.timeframe[df.pattern.notna()].values[0])
+    b = []
+    b.extend(mt5_symbols['majors'])
+    b.extend(mt5_symbols['others'])
+    for symbol in b:
 
-                # # Verify that the spread isn't too high
-                # if spread_is_ok():
+        df = mt5_ohlc_request(symbol, timeframe)
 
-                # print(f"{symbol} {timeframe} {pattern}", datetime.now())# - pd.Timedelta('6 hours')
-            
-                # # open 2 trades. one with tp1 and the other with tp2
-                # enter_trade('tp1')
-                # enter_trade('tp2')
+        atr(df)
+        hlc3(df)
+        set_ema(df)
+        auction_vol(df)
+        avg_vol(df)
+        pinbar(df)
+        avg_bar_size(df)
+        find_peaks(df)
+        fade_b(df)
+        fade_s(df)
+        spring_b(df) 
+        spring_s(df)
+        stoprun_b(df)
+        stoprun_s(df)
 
-                # rather than open trades, send to the setups database
-                # df = df[['datetime', 'symbol', 'timeframe', 'pattern', 'entry', 'tp1', 'tp2', 'sl']].tail(1)
-                # df.to_sql('setups', setups_con, if_exists='append', index=False)
-            
-                # else:
-                #     print(f'{symbol} {timeframe} spread is too high')
+        i = df.tail(1).index[0]
+        pattern = df.loc[i, 'pattern']
+        
+        if not pd.isnull(pattern) and spread_is_ok(df, i, symbol):
+            print(symbol, timeframe, pattern)
+            # rather than enter the trade here, send that df row back to 'main'
+            # ... but i can't just return the row andbreak the loop
+            send_trade_alert(symbol, timeframe, pattern)
+            enter_trade(df, i, symbol, timeframe)
+            # forecast_df = pd.read_sql('outlook', econ_con)
 
 
-        # Now seems like a good time to terminate the connections
-        # fxcm_con.close()
-        # sql_con.close()
-
-        # except Exception as e: 
-        #     print('error:', e)
-        #     bot
 
 def trade_scan_handler():
     ''' A continuous loop that checks the database for the last
