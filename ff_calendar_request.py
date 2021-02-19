@@ -102,6 +102,9 @@ def clean_data(df, year, remove_non_numeric=True):
             df.columns[9]: 'graph', 
             })
     
+    df.time[(df.time == '') | (df.time == '[TABLE]')] = np.nan
+    df.time = df.time.fillna(method='ffill')
+
     df.date[df.date == ''] = np.nan
     df.date = df.date.fillna(method='ffill')       
 
@@ -109,14 +112,11 @@ def clean_data(df, year, remove_non_numeric=True):
     df = df[df.previous != '']
     
     df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
-                       
-    df.time[df.time == ''] = np.nan
-    df.time = df.time.fillna(method='ffill')
-    df = df[df.time.str.contains(':')]
 
     # Remove some unwanted rows
     error_causers = 'Spanish|Italian|French|Bond|Data|Vote|MPC'
     df = df[~df.event.str.contains(error_causers)]
+    df = df[df.time.str.contains(':')]
 
     # Fix the date and add the current year
     df['date'] = df.apply(lambda x: x['date'][3:] + ' ' + str(year), axis=1) 
