@@ -7,7 +7,7 @@ import time
 import sqlite3
 from datetime import datetime
 from create_db import econ_db  # local path to the database 
-from tokens import ff_cal_sheet, forecast_sheet
+from tokens import ff_cal_sheet, forecast_sheet, bot
 
 econ_con = sqlite3.connect(econ_db)
 
@@ -104,6 +104,7 @@ def clean_data(df, year, remove_non_numeric=True):
     df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
             
     # Convert blanks to nans and then fill               
+    df = df[~df.time.str.contains('[TABLE]')] # this really screwed me over 
     df.date[df.date == ''] = np.nan
     df.date = df.date.fillna(method='ffill')         
     df.time[df.time == ''] = np.nan
@@ -176,9 +177,9 @@ def build_historical_db(year_start=2012):
             # Update database
             save_ff_cal_to_db(df)
 
-    #  :/
-    econ_con.close()
-        
+   
+    econ_con.close()  # :/
+         
 
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
@@ -207,7 +208,7 @@ def calculate_raw_db():
 
         if len(temp) > 2:
 
-            # Get the recent accuracy of the forecast as a percentage (returns lots of 'inf's)
+            # Get the recent accuracy of the forecast as a percentage (returns lots of inf's)
             accuracy = temp.actual / temp.forecast 
             accuracy = accuracy.replace([-np.Inf, np.Inf], 0.001)
             df.loc[temp.index, 'accuracy'] = round(accuracy.rolling(6).mean(), 2)
@@ -311,6 +312,13 @@ def rate_weekly_forecasts():
         event = df.loc[i, 'ccy_event']
         ccy = df.loc[i, 'ccy']
 
+        # Ensure the event exists in the database
+        if len(db[db.ccy_event == event]) == 0:
+            message = f'No history exists for {event}.'
+            print('~~~', message, '~~~')
+            bot.send_message(chat_id=446051969, text=message)
+            continue
+
         # Ensure there are no nans
         temp = combined[(combined.ccy_event == event)
                         &
@@ -318,7 +326,8 @@ def rate_weekly_forecasts():
                         &
                         (combined.previous.notna())
                         ]
-
+        if len(temp) < 2:
+            print(f'Less than 2 events found for {event}.')
         # Normalize forecast and previous 
         forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
         previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
@@ -330,10 +339,11 @@ def rate_weekly_forecasts():
         trend = combined.trend[(combined.ccy_event == event)
                                 &
                                 (combined.trend.notna())
-                                ].tail(1).values[0]
+                                ].tail(1)
 
         # For newish events there won't yet be a trend value                        
-        if trend:                        
+        if len(trend) > 0:
+            trend = trend.values[0]                    
 
             both_positive = forecast_rating > 0 and trend > 0
             both_negative = forecast_rating < 0 and trend < 0
@@ -355,15 +365,20 @@ def rate_weekly_forecasts():
         accuracy = db.accuracy[(db.ccy_event == event) 
                                 &
                                (db.accuracy.notna())
-                               ].tail(1).values[0]
+                               ].tail(1)
                                 
         # For newish events there won't yet be an accuracy value                        
-        if accuracy:  
+        if len(accuracy) > 0:  
 
-            forecast_rating /= accuracy
+            forecast_rating /= accuracy.values[0]
 
         # Mltiply the forecast rating by the events weight
-        forecast_rating *= db.weight[db.ccy_event == event].values[0]
+        weight = db.weight[db.ccy_event == event]
+
+        try:
+            forecast_rating *= db.weight[db.ccy_event == event].values[0]
+        except:
+           print(event)
 
         # Finally, save that data
         forecasts_df.loc[i, 'ccy'] = df.loc[i, 'ccy']
@@ -557,5 +572,9 @@ def verify_db_tables_exist():
 # tasks while this one finishes.  Which ends up causing an error because 
 # the database hasn't had time to build.  So have to call this function manually..
 
-verify_db_tables_exist()
+# verify_db_tables_exist()
 
+# data = ff_cal_sheet.get_all_values() # list of lists
+# df = pd.DataFrame(data)
+# df = clean_data(df, 2021)
+# print(df.iloc[-100:-50])
