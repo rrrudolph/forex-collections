@@ -102,19 +102,17 @@ def clean_data(df, year, remove_non_numeric=True):
             df.columns[9]: 'graph', 
             })
     
-    # The main 2 filters
+    df.date[df.date == ''] = np.nan
+    df.date = df.date.fillna(method='ffill')       
+
     df = df[df.event != '']
     df = df[df.previous != '']
-
     
     df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
-            
-    # Convert blanks to nans and then fill               
-    df.date[df.date == ''] = np.nan
-    df.date = df.date.fillna(method='ffill')         
+                       
     df.time[df.time == ''] = np.nan
     df.time = df.time.fillna(method='ffill')
-
+    df = df[df.time.str.contains(':')]
 
     # Remove some unwanted rows
     error_causers = 'Spanish|Italian|French|Bond|Data|Vote|MPC'
@@ -135,7 +133,6 @@ def clean_data(df, year, remove_non_numeric=True):
     # Remove all the non-numeric values
     if remove_non_numeric == True:
         df = run_regex(df)
-
 
     return df
 
@@ -426,8 +423,6 @@ def rate_monthly_outlook():
             # In the rare case of a new type of event where there's
             # no history to calculate, just skip it
             if len(temp) < 2:
-                # print('rate_monthly_outlook(): new event!')
-                # print(event)
                 continue
 
             # Create normalized columns
