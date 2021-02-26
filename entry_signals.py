@@ -148,16 +148,13 @@ def set_ema(df):
     df['ema_50'] = df.hlc3.ewm(span=50,adjust=False).mean()
     df['ema_100'] = df.hlc3.ewm(span=100,adjust=False).mean()
 
-def wwma(values, n):
-    return values.ewm(alpha=1/n, adjust=False).mean()
-
 def atr(df, n=14):
     data = pd.DataFrame()
     data['tr0'] = abs(df.high - df.low)
     data['tr1'] = abs(df.high - df.close.shift())
     data['tr2'] = abs(df.low - df.close.shift())
     tr = data[['tr0', 'tr1', 'tr2']].max(axis=1)
-    atr = wwma(tr, n)
+    atr = tr.ewm(alpha=1/n, adjust=False).mean() 
     df['atr'] = atr
 
 def avg_vol(df):
@@ -375,7 +372,7 @@ def stoprun_s(df):
                                 save_trade_info(df, i)
 
 
-def trade_scanner(timeframe):
+def trade_scanner(timeframe, bot=bot):
     ''' Read the database for the current timeframe. This function gets
     called within a loop so only a single timeframe will be passed. '''
     
@@ -385,6 +382,8 @@ def trade_scanner(timeframe):
     for symbol in b:
 
         df = mt5_ohlc_request(symbol, timeframe)
+
+        df['pattern'] = np.nan
 
         atr(df)
         hlc3(df)
@@ -409,6 +408,8 @@ def trade_scanner(timeframe):
             # rather than enter the trade here, send that df row back to 'main'
             # ... but i can't just return the row andbreak the loop
             send_trade_alert(symbol, timeframe, pattern)
+            bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
+
             enter_trade(df, i, symbol, timeframe)
             # forecast_df = pd.read_sql('outlook', econ_con)
 

@@ -2,9 +2,8 @@ import sqlite3
 from symbols_lists import fx_symbols, fin_symbols
 
 # This is the home location for directory paths. 
-ohlc_db = r'/home/r/Documents/ohlc.db'
-econ_db = r'/home/r/Documents/economic_data.db'
-setups_db = r'/home/r/Documents/setups.db'
+ohlc_db = r'C:\Users\ru\forex\db\ohlc.db'
+econ_db = r'C:\Users\ru\forex\db\economic_data.db'
 
 
 def setup_conn(path):

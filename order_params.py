@@ -67,7 +67,7 @@ def _increase_volume_if_forecast(df, i, symbol):
 
     if base_sum or counter_sum:
         # Send the forecast data to telegram
-        _send_telegram_forecast(f'{base_ccy}:{base_sum}  {counter_ccy}:{counter_sum}')
+        _send_telegram_forecast(f'{base_ccy}: {base_sum}  {counter_ccy}: {counter_sum}')
 
     # Check if trade is long or short
     if df.loc[i, 'pattern'][-2:] == '_b':

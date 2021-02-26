@@ -129,7 +129,7 @@ def clean_data(df, year, remove_non_numeric=True):
     # Remove some unwanted rows
     error_causers = 'Spanish|Italian|French|Bond|Data|Vote|MPC'
     df = df[~df.event.str.contains(error_causers)]
-    df = df[df.time.str.contains(':')]
+    df = df[df.time.str.contains(':|Tentative')]
 
     # Fix the date and add the current year
     df['date'] = df.apply(lambda x: x['date'][3:] + ' ' + str(year), axis=1) 
@@ -548,7 +548,6 @@ def forecast_handler(sheet=forecast_sheet, econ_con=econ_con):
         
         # Scan again in 1 hour
         time.sleep(60*60)
-
 
 
 # When this module gets imported, have it run this to verify that the 

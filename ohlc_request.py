@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
+import MetaTrader5 as mt5
 import sqlite3
 import time
-import fxcmpy
+# import fxcmpy
 import socketio
 import requests
 import json
@@ -10,141 +11,153 @@ from datetime import datetime
 import concurrent.futures
 from create_db import setup_conn, ohlc_db
 from symbols_lists import fx_symbols, fin_symbols, fx_timeframes, seconds_per_candle
-from tokens import fin_token, fxcm_con
+# from tokens import fin_token
 
-conn, c = setup_conn(ohlc_db)
+# conn, c = setup_conn(ohlc_db)
 
 
 
-def _get_latest_ohlc_datetime(symbol, timeframe, c=c):
-    ''' Get the last ohlc timestamp for each symbol '''
+# def _get_latest_ohlc_datetime(symbol, timeframe, c=c):
+#     ''' Get the last ohlc timestamp for each symbol '''
 
-    # If the db is blank this will error with 'NoneType'
-    try:
-        c.execute(f'''SELECT datetime 
-                                FROM ohlc
-                                WHERE symbol = {symbol}
-                                AND timeframe = {timeframe}
-                                ORDER BY datetime DESC
-                                LIMIT 1''')
-        return c.fetchone()[0]
+#     # If the db is blank this will error with 'NoneType'
+#     try:
+#         c.execute(f'''SELECT datetime 
+#                                 FROM ohlc
+#                                 WHERE symbol = {symbol}
+#                                 AND timeframe = {timeframe}
+#                                 ORDER BY datetime DESC
+#                                 LIMIT 1''')
+#         return c.fetchone()[0]
     
-    except TypeError:
-        pass
+#     except TypeError:
+#         pass
 
 
-def _set_start_time(symbol, timeframe, num_candles=999):
-    ''' Set request 'start' time based on the last row in the db, 
-        otherwise if there's no data just request a bunch of candles. '''
+# def _set_start_time(symbol, timeframe, num_candles=999):
+#     ''' Set request 'start' time based on the last row in the db, 
+#         otherwise if there's no data just request a bunch of candles. '''
 
-    timeframe = str(timeframe)
+#     timeframe = str(timeframe)
     
-    if _get_latest_ohlc_datetime(symbol, timeframe):
-        start = _get_latest_ohlc_datetime(symbol, timeframe)
-    else: 
-        start = round(time.time()) - (num_candles * seconds_per_candle[timeframe])
+#     if _get_latest_ohlc_datetime(symbol, timeframe):
+#         start = _get_latest_ohlc_datetime(symbol, timeframe)
+#     else: 
+#         start = round(time.time()) - (num_candles * seconds_per_candle[timeframe])
 
-    return start
+#     return start
 
 
-def finnhub_ohlc_request(symbol, timeframe, token=fin_token):
-    ''' This doesn't account for weekend gaps. So requesting small 
-        amounts of M1 candles can cause problems on weekends.  Max returned candles
-        seems to be about 650-800.  Finnhub only returns closed candles, not the current candle.  
-        Rate limit is 60 calls per minute.'''
+# def finnhub_ohlc_request(symbol, timeframe, token=fin_token):
+#     ''' This doesn't account for weekend gaps. So requesting small 
+#         amounts of M1 candles can cause problems on weekends.  Max returned candles
+#         seems to be about 650-800.  Finnhub only returns closed candles, not the current candle.  
+#         Rate limit is 60 calls per minute.'''
 
     
-    start = _set_start_time(symbol, timeframe)
-    end = round(time.time())
+#     start = _set_start_time(symbol, timeframe)
+#     end = round(time.time())
 
-    if 'OANDA' in symbol:
-        r = requests.get(f'https://finnhub.io/api/v1/forex/candle?symbol={symbol}&resolution={timeframe}&from={start}&to={end}&token={token}')
-    else:
-        r = requests.get(f'https://finnhub.io/api/v1/stock/candle?symbol={symbol}&resolution={timeframe}&from={start}&to={end}&token={token}')
+#     if 'OANDA' in symbol:
+#         r = requests.get(f'https://finnhub.io/api/v1/forex/candle?symbol={symbol}&resolution={timeframe}&from={start}&to={end}&token={token}')
+#     else:
+#         r = requests.get(f'https://finnhub.io/api/v1/stock/candle?symbol={symbol}&resolution={timeframe}&from={start}&to={end}&token={token}')
     
-    # Check for a bad request
-    # print(len(r))
-    if str(r) == '<Response [422]>':
-        print(r, 'Finnhub unable to process')
-    if str(r) == '<Response [429]>':
-        print(r, 'Finnhub max requests exceeded')
+#     # Check for a bad request
+#     # print(len(r))
+#     if str(r) == '<Response [422]>':
+#         print(r, 'Finnhub unable to process')
+#     if str(r) == '<Response [429]>':
+#         print(r, 'Finnhub max requests exceeded')
 
-    r = r.json()
-    if r['s'] == 'no_data':
-        print('Finnhub OHLC Request error. Check parameters:')
-        print(' - symbol:', symbol)
-        print(' - timeframe:', timeframe)
-        print(' - start:', start)
-        print(' - end:  ', end)
-        print('current time:', time.time())
+#     r = r.json()
+#     if r['s'] == 'no_data':
+#         print('Finnhub OHLC Request error. Check parameters:')
+#         print(' - symbol:', symbol)
+#         print(' - timeframe:', timeframe)
+#         print(' - start:', start)
+#         print(' - end:  ', end)
+#         print('current time:', time.time())
 
-    else:
-        df = pd.DataFrame(data=r)
-        df = df.rename(columns={'t':'datetime', 'o':'open', 'h':'high', 'l':'low', 'c':'close', 'v':'volume'})
+#     else:
+#         df = pd.DataFrame(data=r)
+#         df = df.rename(columns={'t':'datetime', 'o':'open', 'h':'high', 'l':'low', 'c':'close', 'v':'volume'})
 
-        # Ensure all data is SQLite friendly
-        df['symbol'] = symbol
-        df['timeframe'] = timeframe
-        df['datetime'] = pd.to_datetime(df.datetime, unit='s').astype(str)
-        # df['datetime'] = df['datetime'].astype(str)
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
-        df = df[['datetime', 'symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume']]
+#         # Ensure all data is SQLite friendly
+#         df['symbol'] = symbol
+#         df['timeframe'] = timeframe
+#         df['datetime'] = pd.to_datetime(df.datetime, unit='s').astype(str)
+#         # df['datetime'] = df['datetime'].astype(str)
+#         df['open'] = df['open'].astype(float)
+#         df['high'] = df['high'].astype(float)
+#         df['low'] = df['low'].astype(float)
+#         df['close'] = df['close'].astype(float)
+#         df['volume'] = df['volume'].astype(float)
+#         df = df[['datetime', 'symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume']]
     
-        return df
+#         return df
 
 
-def fxcm_ohlc_request(symbol, timeframe):
-    ''' Request candles from fxcm '''
+# def fxcm_ohlc_request(symbol, timeframe):
+#     ''' Request candles from fxcm '''
 
-    # FXCM requires these in datetime format
-    start = datetime.fromtimestamp(_set_start_time(symbol, timeframe, num_candles=5000))
-    end = datetime.fromtimestamp(time.time())
+#     # FXCM requires these in datetime format
+#     start = datetime.fromtimestamp(_set_start_time(symbol, timeframe, num_candles=5000))
+#     end = datetime.fromtimestamp(time.time())
 
-    # start = datetime(2021, 1, 27)
-    # end = datetime(2021, 1, 28)
-    # Make request
-    try:
-        df = fxcm_con.get_candles(symbol, 
-                            period=fx_timeframes[timeframe],
-                            start=start, 
-                            stop=end,
-        )
-    except:
-        'fxcm fail'
-        fxcm_con.close()
+#     # start = datetime(2021, 1, 27)
+#     # end = datetime(2021, 1, 28)
+#     # Make request
+#     try:
+#         df = fxcm_con.get_candles(symbol, 
+#                             period=fx_timeframes[timeframe],
+#                             start=start, 
+#                             stop=end,
+#         )
+#     except:
+#         'fxcm fail'
+#         fxcm_con.close()
     
-    df = df.rename(columns={
-            'bidopen': 'open', 
-            'bidhigh': 'high',
-            'bidlow': 'low',
-            'bidclose': 'close',
-            'tickqty': 'volume',
-            }
-    )
+#     df = df.rename(columns={
+#             'bidopen': 'open', 
+#             'bidhigh': 'high',
+#             'bidlow': 'low',
+#             'bidclose': 'close',
+#             'tickqty': 'volume',
+#             }
+#     )
         
-    # I dont think sqlite can save datetime formats so convert to str
-    df = df[['open', 'high', 'low', 'close', 'volume']]
-    df['datetime'] = df.index.astype(str)
-    df['timeframe'] = timeframe
-    df['symbol'] = symbol
-    df = df.reset_index(drop=True)
+#     # I dont think sqlite can save datetime formats so convert to str
+#     df = df[['open', 'high', 'low', 'close', 'volume']]
+#     df['datetime'] = df.index.astype(str)
+#     df['timeframe'] = timeframe
+#     df['symbol'] = symbol
+#     df = df.reset_index(drop=True)
 
-    return df
-
-
-def _timeframes_to_request():
+#     return df
 
 
+def timeframes_to_request():
+
+
+    # times = {
+    #     'D': ['1', '5', '15', '60', 'D'],
+    #     0: ['1', '5', '15', '60'],
+    #     15: ['1', '5', '15'],
+    #     5: ['1', '5'],
+    #     1: ['1']  
+    # }
     times = {
-        'D': ['1', '5', '15', '60', 'D'],
-        0: ['1', '5', '15', '60'],
-        15: ['1', '5', '15'],
-        5: ['1', '5'],
-        1: ['1']  
+        0: [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15, 
+            mt5.TIMEFRAME_M30, mt5.TIMEFRAME_H1],
+        30: [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15, mt5.TIMEFRAME_M30],
+        # '20': [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10, mt5.TIMEFRAME_M20],
+        15: [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15],
+        # '10': [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10],
+        5: [mt5.TIMEFRAME_M5],
+        1: [mt5.TIMEFRAME_M1],
+        'test': [mt5.TIMEFRAME_M1, mt5.TIMEFRAME_M2, mt5.TIMEFRAME_M3, mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10, mt5.TIMEFRAME_M15, 
+            mt5.TIMEFRAME_M30, mt5.TIMEFRAME_H1],
     }
 
     # Reset the logic gate
@@ -175,74 +188,74 @@ def _timeframes_to_request():
                 return timeframes
 
         if second == 0:
-            timeframes = times[1]
+            timeframes = times['test']
+            # timeframes = times[1] #########################################################################
             return timeframes
 
 
-def _fxcm(timeframes):
-    ''' Run fxcm requests '''
+# def _fxcm(timeframes):
+#     ''' Run fxcm requests '''
 
-    fxcm_df = [fxcm_ohlc_request(s, t) for s in fx_symbols for t in timeframes]
-    fxcm_df = pd.concat(fxcm_df)
+#     fxcm_df = [fxcm_ohlc_request(s, t) for s in fx_symbols for t in timeframes]
+#     fxcm_df = pd.concat(fxcm_df)
 
-    return fxcm_df
+#     return fxcm_df
 
 
-def _finnhub(timeframes):
-    ''' Run the finnhub requests, but keep in mind the 60 calls per minute max '''
+# def _finnhub(timeframes):
+#     ''' Run the finnhub requests, but keep in mind the 60 calls per minute max '''
 
-    # Track elapsed time and only make 1 request per second if necessary
-    num_calls = len(timeframes) * len(fin_symbols)
-    if num_calls >= 60:
+#     # Track elapsed time and only make 1 request per second if necessary
+#     num_calls = len(timeframes) * len(fin_symbols)
+#     if num_calls >= 60:
 
-        fin_df = pd.DataFrame()
+#         fin_df = pd.DataFrame()
 
-        for symbol in fin_symbols:
-            for timeframe in timeframes:
+#         for symbol in fin_symbols:
+#             for timeframe in timeframes:
                 
-                start_time = time.time()
+#                 start_time = time.time()
 
-                fin_df.append(finnhub_ohlc_request(symbol, timeframe))
+#                 fin_df.append(finnhub_ohlc_request(symbol, timeframe))
 
-                elapsed_time = time.time() - start_time
-                if elapsed_time < 1:
-                    time.sleep(1 - elapsed_time)
+#                 elapsed_time = time.time() - start_time
+#                 if elapsed_time < 1:
+#                     time.sleep(1 - elapsed_time)
     
-    else:
-        fin_df = [finnhub_ohlc_request(s, t) for s in fin_symbols for t in timeframes]
-        fin_df = pd.concat(fin_df)
+#     else:
+#         fin_df = [finnhub_ohlc_request(s, t) for s in fin_symbols for t in timeframes]
+#         fin_df = pd.concat(fin_df)
 
    
-    return fin_df
+#     return fin_df
 
 
-def ohlc_request_handler():
-    ''' Continually check the time and if a candle has recently closed request the new data. '''
+# def ohlc_request_handler():
+#     ''' Continually check the time and if a candle has recently closed request the new data. '''
 
-    while True:
-        # print('ohlc true')  ok that at least works
-        timeframes = _timeframes_to_request()
-        if timeframes:
-            # print('minute: ', minute)
-            print('timeframes inside request handler:')
-            print(timeframes)
+#     while True:
+#         # print('ohlc true')  ok that at least works
+#         timeframes = _timeframes_to_request()
+#         if timeframes:
+#             # print('minute: ', minute)
+#             print('timeframes inside request handler:')
+#             print(timeframes)
 
-            fxcm_df = _fxcm(timeframes)
-            fin_df = _finnhub(timeframes)
+#             fxcm_df = _fxcm(timeframes)
+#             fin_df = _finnhub(timeframes)
 
-            df = pd.concat([fxcm_df,fin_df])
+#             df = pd.concat([fxcm_df,fin_df])
 
-            # Save the data to the database
-            for symbol in df.symbol.unique():
-                unique_df = df[df.symbol == symbol]
-                unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
+#             # Save the data to the database
+#             for symbol in df.symbol.unique():
+#                 unique_df = df[df.symbol == symbol]
+#                 unique_df.to_sql(f'{symbol}', conn, if_exists='append', index=False)
 
 def _format_mt5_data(df):
-    df = df[:-1] # sometimes calculating the current bar throws errors
+    
     df = df.rename(columns={'time': 'dt', 'tick_volume': 'volume'})
     df.dt = pd.to_datetime(df.dt, unit='s')
-    df['pattern'] = np.nan
-    df['peak'] = np.nan
+    df.dt = df.dt - pd.Timedelta('6 hours')
 
     return df
 
@@ -250,6 +263,10 @@ def _format_mt5_data(df):
 def mt5_ohlc_request(symbol, timeframe, num_candles=70):
     ''' Since this data is already stored locally, only request the minimum
     required for trade scanning. '''
+
+    if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
+        print("initialize() failed, error code =", mt5.last_error())
+        quit()
 
      # If data request fails, re-attempt once
     try:
@@ -266,3 +283,4 @@ def mt5_ohlc_request(symbol, timeframe, num_candles=70):
     df = _format_mt5_data(df)
 
     return df
+
