@@ -9,7 +9,11 @@ from datetime import datetime
 from create_db import econ_db  # local path to the database 
 from tokens import ff_cal_sheet, forecast_sheet, bot
 
+
 econ_con = sqlite3.connect(econ_db)
+
+# month = 0
+# year = 0
 
 
 forecast_weights = {
@@ -28,6 +32,7 @@ forecast_weights = {
     'PMI': 3,
     'Prelim': 2,
     'Final': 0.5,
+    'Revised': 0.5,
 }
 
 inverted_weights = [
@@ -51,14 +56,22 @@ def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     if historical_fill == True:
         cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month={month}.{year}", "table", 4)"""
     else:
-        cell = fr"""=importhtml("https://www.forexfactory.com/calendar?week=this", "table", 4)"""
+        cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month=this", "table", 4)"""
         
     sheet.update_cell(1,1, cell)
-
     time.sleep(1)
 
     data = sheet.get_all_values() # list of lists
     df = pd.DataFrame(data)
+
+    # Don't proceed until you have the data
+    while len(df) < 10:
+        time.sleep(2) 
+        df = pd.DataFrame(sheet.get_all_values())
+
+        print('Google is being slow or throttling requests. Sleeping for 1min.')
+        time.sleep(60) 
+        df = pd.DataFrame(sheet.get_all_values())
 
     return df
 
@@ -162,22 +175,11 @@ def build_historical_db(year_start=2012):
 
             # Request data
             df = update_gsheet_cell(month, year, historical_fill=True)
-            time.sleep(1)
-
-            while len(df) < 10:
-                time.sleep(2) 
-                df = update_gsheet_cell(month, year, historical_fill=True)
-
-                print('Google is throttling requests. Sleeping for 1min.')
-                time.sleep(60) 
-                df = update_gsheet_cell(month, year, historical_fill=True)
-
             df = clean_data(df, year, remove_non_numeric=False)
 
             # Update database
-            save_ff_cal_to_db(df)
+            df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
 
-   
     econ_con.close()  # :/
          
 
@@ -258,7 +260,9 @@ def weekly_ff_cal_request():
     that data to the raw database and sleep for 24hrs. '''  
 
     # Make request
-    df = update_gsheet_cell()
+    year = datetime.today().year
+    month = datetime.today().month
+    df = update_gsheet_cell(month, year)
 
     # If today is Saturday, save the data and sleep the program for 24hrs
     # Monday is 0, Sunday is 6
@@ -267,7 +271,7 @@ def weekly_ff_cal_request():
     if weekday == 5:
 
         df = clean_data(df, year, remove_non_numeric=False)
-        save_ff_cal_to_db(df)
+        df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
         calculate_raw_db(df)
         time.sleep(60*1440)
 
@@ -278,7 +282,7 @@ def weekly_ff_cal_request():
     return df
 
 
-def rate_weekly_forecasts():
+def rate_weekly_forecasts(start, horizon='48 hour', bot=bot, save_to_db=False):
     ''' Calculate the current weeks data by normalizing
     against the database. Returns a dict. '''
 
@@ -291,20 +295,20 @@ def rate_weekly_forecasts():
     df = _set_dtypes(df)
     
     # Filter for events with forecasts which are set to drop within the next 48 hours
-    time_horizon = datetime.now() + pd.Timedelta('48 hours') 
-    current_time = datetime.now()
+    start = pd.to_datetime(start)
+    end = datetime.now() + pd.Timedelta(horizon) 
     df = df[
         (df.forecast.notna()) 
         & 
-        (df.datetime < time_horizon)
+        (df.datetime < end)
         & 
-        (df.datetime > current_time)
+        (df.datetime > start)
     ]
     # Combine the df's to normalize and stuff
     combined = pd.concat([db, df])
 
+
     # Now go through the upcoming events and calculate stuff
-    forecasts = {}
     forecasts_df = pd.DataFrame()
     for i in df.index:
         event = df.loc[i, 'ccy_event']
@@ -335,10 +339,10 @@ def rate_weekly_forecasts():
         forecast_rating = (forecast - previous).values[-1]
 
         # Get the trend of the actuals
-        trend = combined.trend[(combined.ccy_event == event)
-                                &
-                                (combined.trend.notna())
-                                ].tail(1)
+        trend = db.trend[(db.ccy_event == event)
+                        &
+                        (db.trend.notna())
+                        ].tail(1)
 
         # For newish events there won't yet be a trend value                        
         if len(trend) > 0:
@@ -387,6 +391,11 @@ def rate_weekly_forecasts():
         forecasts_df.loc[i, 'ccy_event'] = df.loc[i, 'ccy_event']
         forecasts_df.loc[i, 'event_datetime'] = df.loc[i, 'datetime']
         forecasts_df.loc[i, 'forecast'] = round(forecast_rating, 2)
+
+        # And add to the outlook sheet in the databse
+        if save_to_db == True:
+            forecasts_df.to_sql('forecasts', econ_con, if_exists='replace', index=False)
+
 
     return forecasts_df
 
@@ -449,8 +458,6 @@ def rate_monthly_outlook():
                 total.append(latest)
             
         # Save result in the dict
-        # somehow I had a blank temp at this stage when it should have been caught at
-        # the first len(temp) check...... ???
         if len(total) < 1:  
             continue
         avg = sum(total) / len(total)
@@ -463,20 +470,41 @@ def rate_monthly_outlook():
     return monthly_df
 
 
-def save_ff_cal_to_db(df):
-    ''' Write the data to the database. '''
+def upload_to_gsheets(df, sheet=forecast_sheet):
 
-    df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
+    # First clear the current data
+    sheet.clear()
 
+    # Ensure no nans cuz gsheets doesn't like them
+    df = df.replace(np.nan, '')
 
-def forecast_handler():
+    # Convert the df into series
+    ccys = df.ccy.unique()
+
+    # Insert data
+    column = 0
+    for ccy in ccys:
+
+        # Move over one column
+        column += 1
+        date = df.event_datetime[df.ccy == ccy]
+        for num, d in enumerate(date):
+            sheet.update_cell(num+1, column, d.values[0])
+
+        column += 1
+        forecasts = df.forecast[df.ccy == ccy]
+        for num, f in enumerate(forecasts):
+            sheet.update_cell(num+1, column, f.values[0])
+
+      
+def forecast_handler(sheet=forecast_sheet, econ_con=econ_con):
     ''' Both of these return dfs.  Data will be automatically
     added to the database on Saturday through the weekly_request function
     which gets called inside each of these functions. So essentially, everything
     is getting handled behind the scenes. '''
 
     while True:
-        week = rate_weekly_forecasts()
+        week = rate_weekly_forecasts('48 hours')
         month = rate_monthly_outlook()
 
 
@@ -488,48 +516,38 @@ def forecast_handler():
             index = week[week.ccy == ccy].index
             monthly = month.monthly[month.ccy == ccy].values
            
-            if monthly:
+            if len(monthly) > 0:
                 combined.loc[index, 'monthly'] = monthly[0]
         
         # rearrange
         combined = combined[['event_datetime', 'ccy', 'ccy_event', 'forecast', 'monthly']]
 
         # in case any monthlys come up nan set to 0
-        combined = combined.replace(np.nan, 0)
+        combined = combined.replace(np.nan, '')
+
         # upload this weekly data to a gsheet (must be json serializable)
         gsheet = combined.drop(columns=['ccy'])
         gsheet.event_datetime = gsheet.event_datetime.astype(str)
-        forecast_sheet.update([gsheet.columns.values.tolist()] + gsheet.values.tolist())
 
-        # Add this data to the database But in order to not fill with duplicates super fast, read it in
-        # (assuming it exists)
-        try: 
-            historical = pd.read_sql('SELECT * FROM outlook', econ_con)
-        except:
-            combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
-            return combined
-
-        # It exists so combine
-        combined = pd.concat([historical, combined])
-        combined = combined.drop_duplicates(ignore_index=True)
+        sheet.clear()
+        sheet.update([gsheet.columns.values.tolist()] + gsheet.values.tolist())
 
         # One random change is that USD Oil Inventories really affects CAD more,
         # so if that one exists, make it into a CAD forecast
         idx = combined[combined.ccy_event.str.contains('Crude')].index
-        latest_cad_monthly_value = combined.monthly[combined.ccy_event.str.contains('CAD')].values[-1]
         if len(idx) > 0:
+            latest_cad_monthly_value = combined.monthly[combined.ccy_event.str.contains('CAD')]
             combined.loc[idx, 'ccy'] = 'CAD'
-            combined.loc[idx, 'monthly'] = latest_cad_monthly_value
+            combined.loc[idx, 'monthly'] = latest_cad_monthly_value.tail(1)
 
-        if len(combined) > len(historical):
-            combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
+        # this always errors first time and sometimes more
+        # if len(combined) > len(historical):
+        #     combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
 
         # Update 
         
         # Scan again in 1 hour
         time.sleep(60*60)
-
-
 
 
 
@@ -575,17 +593,13 @@ def verify_db_tables_exist():
         combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
         print('Done!')
 
-# Unforunately it seems like a new process gets spawned as those functions run
-# which allows the main file that had been called to continue on with its
-# tasks while this one finishes.  Which ends up causing an error because 
-# the database hasn't had time to build.  So have to call this function manually..
 
 # verify_db_tables_exist()
-forecast_handler()
 
-# data = ff_cal_sheet.get_all_values() # list of lists
-# df = pd.DataFrame(data)
-# df = clean_data(df, 2021)
-# print(df.iloc[-100:-50])
+
+if __name__ == "__main__":
+
+    forecast_handler()
+
 
 
