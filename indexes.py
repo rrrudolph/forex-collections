@@ -8,7 +8,15 @@ from symbols_lists import mt5_symbols, index_ccys
 from ohlc_request import mt5_ohlc_request
 from tokens import adr_sheet
 
-
+'''
+How this is working:
+1. request ticks and resample into some really low timeframe like 1s
+2. transform prices into a rolling(1).diff() type setup
+3. multiply diffs by -1 for the counter pairs
+4. do a cumsum() on the diffs
+5. normalize the cumsum
+6. combine the groups of data into their indexes
+'''
 
 def _request_ticks_and_resample(pair, days, period):
     ''' Ticks will be resampled into 1 second bars '''
@@ -48,6 +56,14 @@ def _normalize(df):
     
     return df
 
+def _transform_to_diffs(df):
+    ''' Rather than deal with the prices, use the diff from one price to the next. '''
+    
+    vol = df.volume
+    df = df.diff()
+    df.volume = vol
+
+    return df
 
 def _invert_counter_pairs(df):
     ''' If the currency isn't the base, make its values negative (ie, EURUSD on the USD index)'''
@@ -56,6 +72,7 @@ def _invert_counter_pairs(df):
     df.high *= -1
     df.low *= -1
     df.close *= -1
+    df = df.dropna()
 
     return df
 
@@ -66,6 +83,7 @@ def _combine_dfs(dfs, base_ccy, final_period, indexes):
     # testing out putting normalization here
     # which would be after the price inversions
     for i, df in enumerate(dfs):
+        dfs[i].close = df.close.cumsum() ############
         dfs[i] = _normalize(df)
 
     temp = dfs[0]
@@ -94,8 +112,6 @@ def _combine_dfs(dfs, base_ccy, final_period, indexes):
     indexes[base_ccy] = combined
 
 
-
-
 def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
     ''' timeframe should be passed as a string like '15 min'. 
     To plot the data on MT5 resample to 1min. The platform will handle
@@ -104,10 +120,9 @@ def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
     if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
-
     
     # This dict will store the dfs of each pair for each ccy (ie, 'USD': 'EURUSD', 'USDJPY', etc)
-    groups = {'USD': [],
+    ccys = {'USD': [],
               'EUR': [],
               'GBP': [],
               'JPY': [],
@@ -121,24 +136,31 @@ def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
         
         # Add the dfs of tick data to the ticks dict
         df = _request_ticks_and_resample(pair, days, initial_period)
+        # Rather than deal with the prices, use the diff from one price to the next
+
+        df = _transform_to_diffs(df)
 
         # Assign the df to its proper dict group
-        for k in groups:
+        for ccy in ccys:
 
-            if pair[:3] == k:
-                groups[k].append(df)
+            if pair[:3] == ccy:
+                # the _invert function was the only way I'd avoid nans after normalizing. why that is I dont know,
+                # but right now this is the only way I can get the program to run...
+                invv_df = _invert_counter_pairs(df.copy())
+                invv_df = _invert_counter_pairs(invv_df)
+                ccys[ccy].append(invv_df)
                 continue
             
-            # Make prices negative if k is in the secondary position
-            if pair[-3:] == k:
-                df = _invert_counter_pairs(df)
-                groups[k].append(df)
+            # Make values negative if k is in the secondary position
+            if pair[-3:] == ccy:
+                inv_df = _invert_counter_pairs(df.copy())
+                ccys[ccy].append(inv_df)
 
-    # Now that the groups dict is filled, combine each group into a single index
+    # Now combine each group into a single index
     # (pass the list of dfs in each group to _combine_dfs which will then combine them)
     indexes = {}
-    for k in groups:
-        _combine_dfs(groups[k], k, final_period, indexes)
+    for ccy in ccys:
+        _combine_dfs(ccys[ccy], ccy, final_period, indexes)
 
     return indexes 
 
@@ -184,10 +206,11 @@ def save_data_for_mpf(indexes):
         df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=True)
 
 
-# if __name__ == 'main':
-    # start = time.time()
-    # indexes = make_ccy_indexes(mt5_symbols['majors'], '15min', initial_period='1s', days=5)
+if __name__ == '__main__':
+    start = time.time()
+    indexes = make_ccy_indexes(mt5_symbols['majors'], '15min', initial_period='1s', days=3)
 
+    print(indexes)
     # end = time.time()
     # # save_data_for_mpf(indexes)
     # print('time:',end-start)
