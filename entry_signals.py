@@ -375,43 +375,60 @@ def stoprun_s(df):
 def trade_scanner(timeframe, bot=bot):
     ''' Read the database for the current timeframe. This function gets
     called within a loop so only a single timeframe will be passed. '''
+
+    forecast_df = pd.read_sql('SELECT * FROM outlook', econ_con)
+
     
     b = []
     b.extend(mt5_symbols['majors'])
     b.extend(mt5_symbols['others'])
     for symbol in b:
 
-        df = mt5_ohlc_request(symbol, timeframe)
+        # Verify there's an upcoming forecast and see what the score is
+        base = symbol[:3]
+        counter = symbol[-3:]
+        if base or counter in forecast_df.ccy:
 
-        df['pattern'] = np.nan
+            df = mt5_ohlc_request(symbol, timeframe)
 
-        atr(df)
-        hlc3(df)
-        set_ema(df)
-        auction_vol(df)
-        avg_vol(df)
-        pinbar(df)
-        avg_bar_size(df)
-        find_peaks(df)
-        fade_b(df)
-        fade_s(df)
-        spring_b(df) 
-        spring_s(df)
-        stoprun_b(df)
-        stoprun_s(df)
+            df['pattern'] = np.nan
 
-        i = df.tail(1).index[0]
-        pattern = df.loc[i, 'pattern']
-        
-        if not pd.isnull(pattern) and spread_is_ok(df, i, symbol):
-            print(symbol, timeframe, pattern)
-            # rather than enter the trade here, send that df row back to 'main'
-            # ... but i can't just return the row andbreak the loop
-            send_trade_alert(symbol, timeframe, pattern)
-            bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
+            atr(df)
+            hlc3(df)
+            set_ema(df)
+            auction_vol(df)
+            avg_vol(df)
+            pinbar(df)
+            avg_bar_size(df)
+            find_peaks(df)
+            fade_b(df)
+            fade_s(df)
+            spring_b(df) 
+            spring_s(df)
+            stoprun_b(df)
+            stoprun_s(df)
 
-            enter_trade(df, i, symbol, timeframe)
-            # forecast_df = pd.read_sql('outlook', econ_con)
+            i = df.tail(1).index[0]
+            pattern = df.loc[i, 'pattern']
+            
+            if not pd.isnull(pattern) and spread_is_ok(df, i, symbol):
+
+                # Make sure forecasts agree
+                base_sum = forecast_df.forecast[forecast_df.ccy == base].sum()
+                counter_sum = forecast_df.forecast[forecast_df.ccy == counter].sum()
+                long_ok = base_sum > 0 or counter_sum < 0
+                short_ok = base_sum < 0 or counter_sum > 0
+
+                ok_to_trade = (pattern[-1] == 'b' and long_ok) or (pattern[-1] == 's' and short_ok)
+                if ok_to_trade:
+                    print(symbol, timeframe, pattern)
+                    # rather than enter the trade here, send that df row back to 'main'
+                    # ... but i can't just return the row andbreak the loop
+                    send_trade_alert(symbol, timeframe, pattern)
+                    bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
+
+                    enter_trade(df, i, symbol, timeframe)
+                    # forecast_df = pd.read_sql('outlook', econ_con)
 
 
 
