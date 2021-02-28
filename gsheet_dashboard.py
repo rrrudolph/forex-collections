@@ -51,9 +51,6 @@ def _upload_bonds(timeframe, sheet=bonds_sheet):
         x = agg_sum - df[f'{name}']
         x = (x - min(x)) / (max(x) - min(x))
         x = df[f'{name}'] - x
-
-        # lastly, normalize the final result for charting purposes  
-        x = (x - min(x)) / (max(x) - min(x))
         symbols[name] = x
 
     # damn Im getting good!
@@ -73,28 +70,27 @@ def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
     
     ohlc = pd.DataFrame()
     for ccy, df in indexes.items():
-
-        # norm so things plot better on gsheets
-        df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
-
-        # and Im only plotting close prices
         ohlc[f'{ccy}'] = df.close
-
-    ohlc['datetime'] = ohlc.index
-    ohlc = ohlc[['datetime', 'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF']]
-
-    # print(ohlc)
-    sheet.clear()
 
     # now merge with bond data
     bonds = _upload_bonds(timeframe)
     ohlc = ohlc.merge(bonds, left_index=True, right_index=True)
 
-    # print(ohlc.columns)
-    ohlc = ohlc.astype(str)
-    sheet.update([ohlc.columns.values.tolist()] + ohlc.values.tolist())
+    # Norm the values for just whatevers gonna be charted
+    print(ohlc)
+    ohlc = ohlc.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
+    print(ohlc)
 
-upload_ohlc('15min', days=2)
+
+    # Make a dt column for charting and move it to front
+    ohlc['datetime'] = ohlc.index
+    ohlc = ohlc[ ['datetime'] + [ col for col in ohlc.columns if col != 'datetime' ] ]
+    ohlc.index = ohlc.index.astype(str)
+    ohlc.datetime = ohlc.datetime.astype(str)
+    # sheet.clear()
+    # sheet.update([ohlc.columns.values.tolist()] + ohlc.values.tolist())
+
+upload_ohlc('15min', days=10)
 
 
 def _upload_adr(sheet=forecast_sheet):
