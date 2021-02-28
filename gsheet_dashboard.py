@@ -7,20 +7,72 @@ from ohlc_request import mt5_ohlc_request
 from symbols_lists import mt5_symbols
 from indexes import make_ccy_indexes
 from entry_signals import atr
-from tokens import forecast_sheet, ohlc_sheet, adr_sheet
+from tokens import forecast_sheet, ohlc_sheet, bonds_sheet
 from ff_calendar_request import rate_weekly_forecasts, rate_monthly_outlook
 
 
+
+def _upload_bonds(timeframe, sheet=bonds_sheet):
+    ''' get the bond data and normalize for plotting with ohlc index data '''
+    
+    df = pd.DataFrame(sheet.get_all_values())
+
+    # Scrub n Clean
+    df = df.set_index(df.iloc[:, 0])
+    df.columns = df.iloc[0]
+    df = df.iloc[1:, 1:]
+    df.index = pd.to_datetime(df.index)
+    df = df.replace('', np.nan)
+    df = df.fillna(method='ffill')
+    df = df.astype(float)
+
+    # Only interested in 10s
+    df = df.iloc[:, 1::2]
+
+    # Convert to diffs
+    df = df.diff()
+    df = df.dropna()
+
+    # cumsum
+    df = df.apply(lambda x: x.cumsum())
+
+    # norm
+    df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
+
+    # create the "counter pair" for each symbol. ie USD10Y against everything.
+    # so iter thru list of columns and whichever one im on, get sum of every
+    # column except the current one. once that's done, I will re-normalize
+    # and then create the actual spread. the spread will just be the current
+    # iter minus that aggregate sum that was normalized.
+    agg_sum = df.apply(lambda x: x.sum(), axis=1)
+
+    symbols = {}
+    for name in df.columns.tolist():
+        x = agg_sum - df[f'{name}']
+        x = (x - min(x)) / (max(x) - min(x))
+        x = df[f'{name}'] - x
+
+        # lastly, normalize the final result for charting purposes  
+        x = (x - min(x)) / (max(x) - min(x))
+        symbols[name] = x
+
+    # damn Im getting good!
+
+    final = pd.DataFrame(symbols)
+    final.index = df.index
+
+    # resample 
+    final = final.apply(lambda x: x.resample(timeframe).last())
+
+    return final
+
+# _upload_bonds('15 min')
 def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
 
     indexes = make_ccy_indexes(mt5_symbols['majors'], timeframe, initial_period='5s', days=days)
-
+    
     ohlc = pd.DataFrame()
     for ccy, df in indexes.items():
-
-        # datetime index needs to be made into a text column
-        # df['datetime'] = df.index
-        # df.datetime = df.datetime.astype(str)
 
         # norm so things plot better on gsheets
         df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
@@ -28,11 +80,24 @@ def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
         # and Im only plotting close prices
         ohlc[f'{ccy}'] = df.close
 
+    ohlc['datetime'] = ohlc.index
+    ohlc = ohlc[['datetime', 'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF']]
+
+    # print(ohlc)
     sheet.clear()
+
+    # now merge with bond data
+    bonds = _upload_bonds(timeframe)
+    ohlc = ohlc.merge(bonds, left_index=True, right_index=True)
+
+    # print(ohlc.columns)
+    ohlc = ohlc.astype(str)
     sheet.update([ohlc.columns.values.tolist()] + ohlc.values.tolist())
 
+upload_ohlc('15min', days=2)
 
-def upload_adr(sheet=adr_sheet):
+
+def _upload_adr(sheet=forecast_sheet):
 
     symbols = []
     symbols.extend(mt5_symbols['majors'])
@@ -81,12 +146,13 @@ def upload_adr(sheet=adr_sheet):
     s = s.sort_values(ascending=False)
 
     # upload to gsheet
-    sheet.clear()
+    sheet.update_cell(11, 7, r'% of ADR traveled')
     for num, val in enumerate(s):
+        sheet.update_cell(num+12, 7, s.index[num])
+        sheet.update_cell(num+12, 8, round(val, 2))
         
-        sheet.update_cell(num+1, 1, s.index[num])
-        sheet.update_cell(num+1, 2, round(val, 2))
-        
+
+
 
 def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
 
@@ -95,16 +161,22 @@ def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
     and then append the data to a dataframe as I went.  I'll save that for later and just do a simple
     mean() function for now. '''
 
+    # putting this here since it goes to the same sheet
+    forecast_sheet.clear()
+    _upload_adr()
+
     # First get a df of however much data you want to normalize against
     # the horizon doesn't change anything if its friday cuz the cal URL is still same week
-    df = rate_weekly_forecasts(datetime.now(), horizon=horizon)
+    df = rate_weekly_forecasts(datetime.now()-pd.Timedelta('3 days'), horizon=horizon)
     df.index = df.event_datetime
 
 
     # Group events falling within the same hour (for plotting)
     df.index = df.index.floor('H')
-    # temp = df.groupby(['ccy'])['forecast'].sum()
+    
+    # groupby confirmed working https://prnt.sc/10857pl
     temp = df.groupby([df.index, 'ccy'])['forecast'].sum()
+
 
     # ghseets can't deserialize a datetime 
     resampled = pd.DataFrame(temp)
@@ -122,7 +194,6 @@ def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
     month = month.replace(np.nan, '')
     month = month.sort_values(by=['monthly'], ascending=False).reset_index(drop=True)
 
-    sheet.clear()
     sheet.update([resampled.columns.values.tolist()] + resampled.values.tolist())
 
     # Now I have to upload te rest manually
@@ -142,8 +213,9 @@ def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
 
 
 
-while True:
-    upload_ohlc('15min', days=2)
-    upload_adr()
-    upload_forecasts(horizon='120 hour')
-    time.sleep(20*60)
+# upload_ohlc('15min', days=2)
+# while True:
+
+
+#     upload_forecasts(horizon='120 hour')
+#     time.sleep(20*60)
