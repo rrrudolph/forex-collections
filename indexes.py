@@ -4,9 +4,8 @@ import numpy as np
 from datetime import date, datetime
 import time
 import pathlib
-from symbols_lists import mt5_symbols, index_ccys
-from ohlc_request import mt5_ohlc_request
-from tokens import adr_sheet
+from symbols_lists import mt5_symbols
+import mplfinance as mpf
 
 '''
 How this is working:
@@ -48,20 +47,25 @@ def _request_ticks_and_resample(pair, days, period):
 
 
 def _normalize(df):
-    df.open = (df.open - min(df.open)) / (max(df.open) - min(df.open))
-    df.high = (df.high - min(df.high)) / (max(df.high) - min(df.high))
-    df.low = (df.low - min(df.low)) / (max(df.low) - min(df.low))
-    df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
-    df.volume = (df.volume - min(df.volume)) / (max(df.volume) - min(df.volume))
+    # df.open = (df.open - min(df.open)) / (max(df.open) - min(df.open))
+    # df.high = (df.high - min(df.high)) / (max(df.high) - min(df.high))
+    # df.low = (df.low - min(df.low)) / (max(df.low) - min(df.low))
+    # df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
+    # df.volume = (df.volume - min(df.volume)) / (max(df.volume) - min(df.volume))
+    # df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
     
     return df
 
-def _transform_to_diffs(df):
+def _diffs_and_cumsum(df):
     ''' Rather than deal with the prices, use the diff from one price to the next. '''
     
     vol = df.volume
     df = df.diff()
     df.volume = vol
+
+    df = df.dropna()
+
+    df = df.apply(lambda x: x.cumsum() if x.name != 'volume' else x)
 
     return df
 
@@ -80,11 +84,12 @@ def _combine_dfs(dfs, base_ccy, final_period, indexes):
     ''' Combine the individual dfs of each pair into one index df and then 
     resample into whatever timeframe is desired. For plotting on MT5, resample to 1min.'''
 
-    # testing out putting normalization here
-    # which would be after the price inversions
-    for i, df in enumerate(dfs):
-        dfs[i].close = df.close.cumsum() ############
-        dfs[i] = _normalize(df)
+    for df in dfs:
+        
+        # normalize
+        df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
+        print(df)
+
 
     temp = dfs[0]
     for df in dfs[1:]:
@@ -136,19 +141,15 @@ def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
         
         # Add the dfs of tick data to the ticks dict
         df = _request_ticks_and_resample(pair, days, initial_period)
+        
         # Rather than deal with the prices, use the diff from one price to the next
-
-        df = _transform_to_diffs(df)
+        df = _diffs_and_cumsum(df)
 
         # Assign the df to its proper dict group
         for ccy in ccys:
 
             if pair[:3] == ccy:
-                # the _invert function was the only way I'd avoid nans after normalizing. why that is I dont know,
-                # but right now this is the only way I can get the program to run...
-                invv_df = _invert_counter_pairs(df.copy())
-                invv_df = _invert_counter_pairs(invv_df)
-                ccys[ccy].append(invv_df)
+                ccys[ccy].append(df)
                 continue
             
             # Make values negative if k is in the secondary position
@@ -209,8 +210,10 @@ def save_data_for_mpf(indexes):
 if __name__ == '__main__':
     start = time.time()
     indexes = make_ccy_indexes(mt5_symbols['majors'], '15min', initial_period='1s', days=3)
+    df = indexes['USD']
+    mpf.plot(df, type='candle', volume=True, show_nontrading=False)
 
-    print(indexes)
+    # print(indexes)
     # end = time.time()
     # # save_data_for_mpf(indexes)
     # print('time:',end-start)
