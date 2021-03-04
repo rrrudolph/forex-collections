@@ -1,26 +1,28 @@
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
-from datetime import date, datetime
+from datetime import datetime
 import time
 import pathlib
+import sqlite3
 from symbols_lists import mt5_symbols
 import mplfinance as mpf
+from create_db import ohlc_db
 
-'''
-How this is working:
-1. request ticks and resample into some really low timeframe like 1s
-2. transform prices into a rolling(1).diff() type setup
-3. multiply diffs by -1 for the counter pairs
-4. do a cumsum() on the diffs
-5. normalize the cumsum
-6. combine the groups of data into their indexes
-'''
+ohlc_con = sqlite3.connect(ohlc_db)
+
 
 def _request_ticks_and_resample(pair, days, period):
     ''' Ticks will be resampled into 1 second bars '''
 
-    _from = datetime.now() - pd.Timedelta(f'{days} day')
+    try:
+        df = pd.read_sql(f'SELECT * FROM USD', ohlc_con)
+        df.index = pd.to_datetime(df.index)
+        _from = df.tail(1).index
+        _from -= pd.Timedelta('4 days')
+    except:
+        _from = datetime.now() - pd.Timedelta(f'{days} day')
+
     _to = datetime.now()
 
     ticks = mt5.copy_ticks_range(pair, _from, _to, mt5.COPY_TICKS_ALL)
@@ -45,31 +47,32 @@ def _request_ticks_and_resample(pair, days, period):
 
     return df
 
-
 def _normalize(df):
     # df.open = (df.open - min(df.open)) / (max(df.open) - min(df.open))
     # df.high = (df.high - min(df.high)) / (max(df.high) - min(df.high))
     # df.low = (df.low - min(df.low)) / (max(df.low) - min(df.low))
     # df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
     # df.volume = (df.volume - min(df.volume)) / (max(df.volume) - min(df.volume))
-    # df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
+    df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
     
     return df
 
-def _diffs_and_cumsum(df):
+def _diff(df):
     ''' Rather than deal with the prices, use the diff from one price to the next. '''
     
     vol = df.volume
     df = df.diff()
     df.volume = vol
-
     df = df.dropna()
+    return df
+
+def _cumsum(df):
 
     df = df.apply(lambda x: x.cumsum() if x.name != 'volume' else x)
 
     return df
 
-def _invert_counter_pairs(df):
+def _invert(df):
     ''' If the currency isn't the base, make its values negative (ie, EURUSD on the USD index)'''
 
     df.open *= -1
@@ -80,44 +83,28 @@ def _invert_counter_pairs(df):
 
     return df
 
-def _combine_dfs(dfs, base_ccy, final_period, indexes):
+def _resample(df, final_period):
     ''' Combine the individual dfs of each pair into one index df and then 
     resample into whatever timeframe is desired. For plotting on MT5, resample to 1min.'''
 
-    for df in dfs:
-        
-        # normalize
-        df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
-        print(df)
-
-
-    temp = dfs[0]
-    for df in dfs[1:]:
-        temp.open += df.open
-        temp.high += df.high
-        temp.low += df.low
-        temp.close += df.close
-        temp.volume += df.volume
-
     # Resample 
-    open = temp.open.resample(final_period).first()
-    high = temp.high.resample(final_period).max()
-    low = temp.low.resample(final_period).min()
-    close = temp.close.resample(final_period).last()
-    volume = temp.volume.resample(final_period).sum()
+    open = df.open.resample(final_period).first()
+    high = df.high.resample(final_period).max()
+    low = df.low.resample(final_period).min()
+    close = df.close.resample(final_period).last()
+    volume = df.volume.resample(final_period).sum()
     
-    combined = pd.DataFrame({'open': open,
+    resampled = pd.DataFrame({'open': open,
                             'high': high,
                             'low': low,
                             'close': close,
                             'volume': volume
                              })
 
-    # Put the df in a dict
-    indexes[base_ccy] = combined
+    return resampled
 
 
-def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
+def make_ccy_indexes(pairs, initial_period='1s', days=40):
     ''' timeframe should be passed as a string like '15 min'. 
     To plot the data on MT5 resample to 1min. The platform will handle
     further resampling from there.'''
@@ -127,6 +114,7 @@ def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
         quit()
     
     # This dict will store the dfs of each pair for each ccy (ie, 'USD': 'EURUSD', 'USDJPY', etc)
+
     ccys = {'USD': [],
               'EUR': [],
               'GBP': [],
@@ -141,30 +129,62 @@ def make_ccy_indexes(pairs, final_period, initial_period='1s', days=5):
         
         # Add the dfs of tick data to the ticks dict
         df = _request_ticks_and_resample(pair, days, initial_period)
+
+        # Adjust to CST
+        df.index = df.index - pd.Timedelta('6 hours')
         
         # Rather than deal with the prices, use the diff from one price to the next
-        df = _diffs_and_cumsum(df)
+        df = _diff(df)
+
+        inverted = _invert(df.copy())
+        df = _cumsum(df)
+        df = _normalize(df)
+        inverted = _cumsum(inverted)
+        inverted = _normalize(inverted)
 
         # Assign the df to its proper dict group
         for ccy in ccys:
 
             if pair[:3] == ccy:
-                ccys[ccy].append(df)
+                # If blank, add in first df as is. else, add
+                if not ccys[ccy]:
+                    ccys[ccy] = df
+                else:
+                    ccys[ccy] += df
                 continue
             
             # Make values negative if k is in the secondary position
             if pair[-3:] == ccy:
-                inv_df = _invert_counter_pairs(df.copy())
-                ccys[ccy].append(inv_df)
+                if not ccys[ccy]:
+                    ccys[ccy] = inverted
+                else:
+                    ccys[ccy] += inverted
 
-    # Now combine each group into a single index
-    # (pass the list of dfs in each group to _combine_dfs which will then combine them)
-    indexes = {}
+    # Resample into 1 min
     for ccy in ccys:
-        _combine_dfs(ccys[ccy], ccy, final_period, indexes)
+        ccys[ccy] = _resample(ccys[ccy], '1 min')
 
-    return indexes 
+    return ccys
 
+def save_data(ccys):
+    ''' Try to append the data from the last row onward.  Otherwise save everything. '''
+
+
+    try:
+        db = pd.read_sql(f'SELECT * FROM USD ORDER BY datetime DESC LIMIT 1', ohlc_con)
+        db.index = pd.to_datetime(db.index)
+
+        for ccy in ccys:
+            df = ccys[ccy]
+            df = df[df.index > db.index[0]]
+            df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
+    
+    except:
+       
+        for ccy in ccys:
+            df = ccys[ccy]
+            df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
+        
 
 
 # start = time.time()
@@ -210,13 +230,13 @@ def save_data_for_mpf(indexes):
 if __name__ == '__main__':
     start = time.time()
     indexes = make_ccy_indexes(mt5_symbols['majors'], '15min', initial_period='1s', days=3)
-    df = indexes['USD']
+    df = indexes['JPY']
     mpf.plot(df, type='candle', volume=True, show_nontrading=False)
 
     # print(indexes)
-    # end = time.time()
+    end = time.time()
     # # save_data_for_mpf(indexes)
-    # print('time:',end-start)
+    print('time:',end-start)
 
     # # send to g sheets
     # df = indexes['USD']
