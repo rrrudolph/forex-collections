@@ -103,18 +103,14 @@ def _resample(df, final_period):
 
     return resampled
 
-
-def make_ccy_indexes(pairs, initial_period='1s', days=40):
-    ''' timeframe should be passed as a string like '15 min'. 
-    To plot the data on MT5 resample to 1min. The platform will handle
-    further resampling from there.'''
+def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
+    ''' The times been adjusted to CST. '''
 
     if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
     
-    # This dict will store the dfs of each pair for each ccy (ie, 'USD': 'EURUSD', 'USDJPY', etc)
-
+    # This dict will store the currency indexes as data is received
     ccys = {'USD': [],
               'EUR': [],
               'GBP': [],
@@ -127,7 +123,6 @@ def make_ccy_indexes(pairs, initial_period='1s', days=40):
 
     for pair in pairs:
         
-        # Add the dfs of tick data to the ticks dict
         df = _request_ticks_and_resample(pair, days, initial_period)
 
         # Adjust to CST
@@ -137,32 +132,32 @@ def make_ccy_indexes(pairs, initial_period='1s', days=40):
         df = _diff(df)
 
         inverted = _invert(df.copy())
-        df = _cumsum(df)
-        df = _normalize(df)
         inverted = _cumsum(inverted)
         inverted = _normalize(inverted)
+        df = _cumsum(df)
+        df = _normalize(df)
 
-        # Assign the df to its proper dict group
+        # Add the df to its proper dict currency, inverting prices for the counter currency
+        # If blank, add in first df as is. else, add in place
         for ccy in ccys:
 
-            if pair[:3] == ccy:
-                # If blank, add in first df as is. else, add
-                if not ccys[ccy]:
+            if ccy == pair[:3]:
+                if len(ccys[ccy]) == 0:
                     ccys[ccy] = df
                 else:
                     ccys[ccy] += df
                 continue
             
-            # Make values negative if k is in the secondary position
-            if pair[-3:] == ccy:
-                if not ccys[ccy]:
+            # Counter currency
+            if ccy == pair[-3:]:
+                if len(ccys[ccy]) == 0:
                     ccys[ccy] = inverted
                 else:
                     ccys[ccy] += inverted
 
     # Resample into 1 min
     for ccy in ccys:
-        ccys[ccy] = _resample(ccys[ccy], '1 min')
+        ccys[ccy] = _resample(ccys[ccy], final_period)
 
     return ccys
 
@@ -187,11 +182,7 @@ def save_data(ccys):
         
 
 
-# start = time.time()
-# end = time.time()
-# print('time:',end-start)
 
-# Save the output to a csv
 def save_index_data_for_mt5(indexes):
     ''' format the data for mt5 and save to csv. '''
 
@@ -216,32 +207,11 @@ def save_index_data_for_mt5(indexes):
         df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=False)
 
 
-def save_data_for_mpf(indexes):
-    
-    for k in indexes:
-        
-        df = indexes[k]
-        df.index = df.index - pd.Timedelta('6 hours')
-        
-        p = r'Desktop'
-        df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=True)
-
-
+# it took 9 min 33 sec to save 60 days of data (~5mil rows of tick data requested 28 times)
 if __name__ == '__main__':
-    start = time.time()
-    indexes = make_ccy_indexes(mt5_symbols['majors'], '15min', initial_period='1s', days=3)
-    df = indexes['JPY']
-    mpf.plot(df, type='candle', volume=True, show_nontrading=False)
 
-    # print(indexes)
-    end = time.time()
-    # # save_data_for_mpf(indexes)
-    print('time:',end-start)
-
-    # # send to g sheets
-    # df = indexes['USD']
-    # df['datetime'] = df.index
-    # df.datetime = df.datetime.astype(str)
-
-    # adr_sheet.clear()
-    # adr_sheet.update([df.columns.values.tolist()] + df.values.tolist())
+    # while True:
+    s = time.time()
+    indexes = make_ccy_indexes(mt5_symbols['majors'])
+    save_data(indexes)
+    print((time.time() - s )/ 60)
