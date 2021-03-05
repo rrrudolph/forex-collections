@@ -9,11 +9,11 @@ import requests
 import json
 from datetime import datetime
 import concurrent.futures
-from create_db import setup_conn, ohlc_db
+from create_db import ohlc_db
 from symbols_lists import fin_symbols, seconds_per_candle
 from tokens import fin_token
 
-ohlc_con = setup_conn(ohlc_db)
+ohlc_con = sqlite3.connect(ohlc_db)
 
 ''' I have to subtract 6 hours from Finnhub data (just like MT5) to get it into CST.
 so a couple conversions take place from saving and requesting '''
@@ -21,11 +21,11 @@ so a couple conversions take place from saving and requesting '''
 def _get_latest_datetime(symbol, timeframe):
     ''' Get the last ohlc datetime for each symbol '''
 
-    # If the db is blank this will error with 'NoneType'
     try:
-        df = pd.read_sql(f"""SELECT * FROM {symbol} 
-                            ORDER BY datetime DESC 
-                            LIMIT 1""", ohlc_con)
+        # df = pd.read_sql(f"""SELECT * FROM {symbol} 
+        #                     ORDER BY datetime DESC 
+        #                     LIMIT 1""", ohlc_con)
+        df = pd.read_sql(f'SELECT * FROM {symbol}', ohlc_con)
         df.index = pd.to_datetime(df.index)
 
         # Add 6 hours to get it back in line with the current GMT and make into timestamp
@@ -37,7 +37,8 @@ def _get_latest_datetime(symbol, timeframe):
 
         return request_start
     
-    except TypeError:
+    # the table might not exist. if its something else it will get caught later
+    except:
         return None
 
 
@@ -88,10 +89,13 @@ def finnhub_ohlc_request(symbol, timeframe):
 
     else:
         df = pd.DataFrame(data=r)
+
         df = df.rename(columns={'t':'datetime', 'o':'open', 'h':'high', 'l':'low', 'c':'close', 'v':'volume'})
         df = df.set_index(df.datetime, drop=True)
-        df.index = pd.to_datetime(df.index - pd.Timedelta('6 hours'))
-
+        df.index = pd.to_datetime(df.index, unit='s')
+        df.index -= pd.Timedelta('6 hours')
+        df = df[['open', 'high', 'low', 'close', 'volume']]
+        
         # Save
         df.to_sql(f'{symbol}', ohlc_con, if_exists='append', index=True)
 
@@ -183,7 +187,12 @@ if __name__ == '__main__':
     while True:
 
         next_candle_time = _get_latest_datetime(fin_symbols[0], '1')
-        if next_candle_time >= time.now():
-
+        
+        # First time running needs this
+        if next_candle_time is None:
             for symbol in fin_symbols:
-                finnhub_ohlc_request()
+                finnhub_ohlc_request(symbol, '1')
+        
+        if next_candle_time >= time.time():
+            for symbol in fin_symbols:
+                finnhub_ohlc_request(symbol, '1')
