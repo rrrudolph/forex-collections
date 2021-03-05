@@ -1,4 +1,47 @@
 
+mt5_symbols = {
+    'majors': [
+        'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 
+        'AUDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 
+        'CHFJPY', 'EURGBP', 'EURAUD', 'EURCHF', 'EURJPY', 
+        'EURNZD', 'EURCAD', 'GBPCHF', 'GBPJPY', 'CADCHF', 
+        'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
+        'NZDCHF', 'NZDJPY', 'NZDUSD',
+    ],
+    'others': [
+    'USDSGD', 'EURPLN', 
+    'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
+    'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
+    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 'DE30', 
+    'UK100', 'US30', 'US500', 'USTEC',
+    'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
+    'XNGUSD', 'XTIUSD', 'XBRUSD', 'BTCUSD', 'BCHUSD', 
+    'DSHUSD', 'ETHUSD', 'LTCUSD',
+    ]
+}
+
+spread_symbols = [
+    'XTIUSD',
+    'XBRUSD',
+    'XAGUSD',
+    'XPDUSD',
+    'XAUUSD',
+    'XNGUSD',
+    'UK100',
+    'DE30',
+    'US500',
+    'US30',
+    'USTEC',
+    'XLF',
+    'XLU',
+    'VIXM',
+    'VIXY',
+    'BAC',
+    'REET',
+    'IWF',
+    'IWD',
+]
+
 
 # Stocks, and some indices have been omitted
 fx_symbols = {
@@ -25,57 +68,6 @@ fx_symbols = {
     ]
 }
 
-index_ccys = [
-    'USD',
-    'EUR',
-    'GBP',
-    'JPY',
-    'AUD',
-    'NZD',
-    'CAD',
-    'CHF',
-]
-mt5_symbols = {
-    'majors': [
-        'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 
-        'AUDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 
-        'CHFJPY', 'EURGBP', 'EURAUD', 'EURCHF', 'EURJPY', 
-        'EURNZD', 'EURCAD', 'GBPCHF', 'GBPJPY', 'CADCHF', 
-        'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
-        'NZDCHF', 'NZDJPY', 'NZDUSD',
-    ],
-    'others': [
-    'USDSGD', 'EURPLN', 
-    'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
-    'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
-    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 'DE30', 
-    'UK100', 'US30', 'US500', 'USTEC',
-    'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
-    'XNGUSD', 'XTIUSD', 'BTCUSD', 'BCHUSD', 
-    'DSHUSD', 'ETHUSD', 'LTCUSD',
-    ]
-}
-
-# mt5_symbols = [  -- all --
-#     'EURUSD', 'GBPUSD', 'USDCHF', 'USDJPY', 'USDCAD', 
-#     'AUDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'AUDJPY', 
-#     'CHFJPY', 'EURGBP', 'EURAUD', 'EURCHF', 'EURJPY', 
-#     'EURNZD', 'EURCAD', 'GBPCHF', 'GBPJPY', 'CADCHF', 
-#     'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
-#     'NZDCHF', 'NZDJPY', 'NZDUSD', 'USDSGD', 'AUDSGD', 
-#     'CHFSGD', 'EURDKK', 'EURHKD', 'EURNOK', 'EURPLN', 
-#     'EURSEK', 'EURSGD', 'EURTRY', 'EURZAR', 'GBPDKK', 
-#     'GBPNOK', 'GBPSEK', 'GBPSGD', 'GBPTRY', 'NOKJPY', 
-#     'NOKSEK', 'SEKJPY', 'SGDJPY', 'USDCNH', 'USDCZK', 
-#     'USDDKK', 'USDHKD', 'USDHUF', 'USDMXN', 'USDNOK', 
-#     'USDPLN', 'USDRUB', 'USDSEK', 'USDTHB', 'USDTRY', 
-#     'USDZAR', 'AUS200', 'CHINA50', 'DE30', 'UK100', 
-#     'US2000', 'US30', 'US500', 'USTEC', 'XAGEUR', 
-#     'XAGUSD', 'XAUEUR', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
-#     'XBRUSD', 'XNGUSD', 'XTIUSD', 'BTCUSD', 'BCHUSD', 
-#     'DSHUSD', 'ETHUSD', 'LTCUSD',
-# ]
-
 
 fin_symbols = [
     'MOO', 
@@ -89,7 +81,8 @@ fin_symbols = [
     'IWF', 
     'IWD', 
     'BAC', 
-    'REET'
+    'REET',
+    'OANDA:XCU_USD',
 ]
 
 spreads = [
