@@ -5,6 +5,7 @@ from datetime import datetime
 import time
 import pathlib
 import sqlite3
+from ohlc_request import mt5_ohlc_request
 from symbols_lists import mt5_symbols
 import mplfinance as mpf
 from create_db import ohlc_db
@@ -158,6 +159,21 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
     # Resample into 1 min
     for ccy in ccys:
         ccys[ccy] = _resample(ccys[ccy], final_period)
+    
+        # Reset open prices to equal the former close
+        df = ccys[ccy]
+        df = df.dropna()
+        first_open = df.open.head(1)[0]
+        first_row = df.head(1).index[0]
+        df.open = df.close.shift(1)
+        df.loc[first_row, 'open'] = first_open 
+
+        # make sure high is highest and llow is lowest
+        for row in df.itertuples(index=True, name=None):
+            i = row[0]
+            df.loc[i, 'high'] = max(df.loc[i, ['open', 'high', 'low', 'close']])
+            df.loc[i, 'low'] = min(df.loc[i, ['open', 'high', 'low', 'close']])
+        ccys[ccy] = df
 
     return ccys
 
@@ -166,7 +182,9 @@ def save_data(ccys):
 
 
     try:
-        db = pd.read_sql(f'SELECT * FROM USD ORDER BY datetime DESC LIMIT 1', ohlc_con)
+        db = pd.read_sql("""SELECT * FROM USD 
+                            ORDER BY datetime DESC 
+                            LIMIT 1""", ohlc_con)
         db.index = pd.to_datetime(db.index)
 
         for ccy in ccys:
@@ -189,14 +207,12 @@ def save_index_data_for_mt5(indexes):
     for k in indexes:
         
         df = indexes[k]
-        # first subtract 6 hours to get it into CST
-        df.index = df.index - pd.Timedelta('6 hours')
 
         # add the necessary columns
         df['date'] = [d.date() for d in df.index]
         df['time'] = [d.time() for d in df.index]
-        df['r_vol'] = np.nan
-        df['spread'] = np.nan
+        df['r_vol'] = 0
+        df['spread'] = 1
         
         # reorder (real volume and spread are ok to be nan i think)
         df = df[['date', 'time', 'open', 'high', 'low', 'close', 'volume', 'r_vol', 'spread']]
@@ -212,6 +228,7 @@ if __name__ == '__main__':
 
     # while True:
     s = time.time()
-    indexes = make_ccy_indexes(mt5_symbols['majors'])
-    save_data(indexes)
+    indexes = make_ccy_indexes(mt5_symbols['majors'], days=5)
+    # save_data(indexes)
+    save_index_data_for_mt5(indexes)
     print((time.time() - s )/ 60)
