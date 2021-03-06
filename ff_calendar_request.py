@@ -56,7 +56,7 @@ def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
     if historical_fill == True:
         cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month={month}.{year}", "table", 4)"""
     else:
-        cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month=this", "table", 4)"""
+        cell = fr"""=importhtml("https://www.forexfactory.com/calendar?week=this", "table", 4)"""
         
     sheet.update_cell(1,1, cell)
     time.sleep(1)
@@ -184,6 +184,7 @@ def build_historical_db(year_start=2012):
     econ_con.close()  # :/
          
 
+
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
     then save as a new formatted file. This only needs to be done weekly
@@ -191,8 +192,15 @@ def calculate_raw_db():
 
     # Open file and prepare for calculations
     df = pd.read_sql('SELECT * FROM ff_cal_raw', econ_con)
+
+    # In case duplicates were made at some point delete them and re-save
+    df = df.drop_duplicates(subset=['datetime', 'ccy_event'])
+    df.to_sql("ff_cal_raw", econ_con, if_exists='replace', index=False)
+
+    # Now continue on
     df = run_regex(df)
     df = _set_dtypes(df)
+
 
     # Find unique events 
     unique_events = df.ccy_event.unique()
@@ -255,7 +263,6 @@ def calculate_raw_db():
     # Overwrite current database file
     df.to_sql("ff_cal", econ_con, if_exists='replace', index=False)
 
-
 def weekly_ff_cal_request():
     ''' Get the current week's data. If today is Saturday append
     that data to the raw database and sleep for 24hrs. '''  
@@ -273,7 +280,7 @@ def weekly_ff_cal_request():
 
         df = clean_data(df, year, remove_non_numeric=False)
         df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
-        calculate_raw_db(df)
+        calculate_raw_db()
         time.sleep(60*1440)
 
     # Otherwise just a regular operation
@@ -395,7 +402,7 @@ def rate_weekly_forecasts(start, horizon='48 hour', bot=bot, save_to_db=False):
 
         # And add to the outlook sheet in the databse
         if save_to_db == True:
-            forecasts_df.to_sql('forecasts', econ_con, if_exists='replace', index=False)
+            forecasts_df.to_sql('outlook', econ_con, if_exists='replace', index=False)
 
 
     return forecasts_df
