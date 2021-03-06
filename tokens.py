@@ -1,19 +1,14 @@
-# import fxcmpy
 import telegram
-# import socketio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
-
 
 # Telegram bot
 bot = telegram.Bot(token='1371103620:AAG_6iRGzmeGDTd0V-W2gPTIavI-gVSPolA')
 
-# FXCM token
-fx_token = '9a018ed0b2a87bf2bfa22ed47b745e13715567fe'
 
 # Finnhub token
 fin_token = 'budmt1v48v6ped914310'
+
 
 # Google Sheets API
 SCOPE = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
@@ -21,17 +16,18 @@ CREDS = ServiceAccountCredentials.from_json_keyfile_name(r'C:\Users\ru\forex\gsh
 CLIENT = gspread.authorize(CREDS)
 
 #DASHBOARD sheet(0)
-forecast_sheet = CLIENT.open('data').get_worksheet(1) # 3rd sheet
+forecast_sheet = CLIENT.open('data').get_worksheet(1) 
 ohlc_sheet  = CLIENT.open('data').get_worksheet(2) 
-ff_cal_sheet = CLIENT.open('data').get_worksheet(3)
-bonds_gsheet = CLIENT.open('data').get_worksheet(4)
-adr_sheet = CLIENT.open('data').get_worksheet(3) #
+ff_cal_sheet = CLIENT.open('data').get_worksheet(4)
+bonds_sheet = CLIENT.open('bonds').get_worksheet(1)
 
 
-# FXCM connection
-# fxcm_con = fxcmpy.fxcmpy(
-#         access_token=fx_token, 
-#         log_level='error', 
-#         server='demo', 
-#         log_file='log.txt'
-#     )
+# Paths to different sqlite database files
+indexes_db = r'C:\Users\ru\forex\db\indexes.db'
+econ_db = r'C:\Users\ru\forex\db\economic_data.db'
+correlation_db = r'C:\Users\ru\forex\db\correlation.db'
+laptop_db = r'\\192.168.1.4\Documents\ohlc.db'
+
+
+# FXCM token
+fx_token = '9a018ed0b2a87bf2bfa22ed47b745e13715567fe'
