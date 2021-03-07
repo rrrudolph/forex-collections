@@ -17,77 +17,66 @@ mt5_symbols = {
     'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
     'XNGUSD', 'XTIUSD', 'XBRUSD', 'BTCUSD', 'BCHUSD', 
     'DSHUSD', 'ETHUSD', 'LTCUSD',
+    'MOO.NYSE', 'XLF.NYSE', 'XLU.NYSE', 'XLP.NYSE',
+    'XLE.NYSE', # ENERGY
+    'XLI.NYSE', # INDUSTRIAL
+    'XOP.NYSE', # OIL EXPORATION
+    'VYM.NYSE', # HIGH YIELD BONDS
+    'LQD.NYSE', # INVESTMENT GRADE CORPORATE BOND
+    'TLT.NYSE', # 20 YR TREASURY
+    'DBA.NYSE', # AGRICULTURE
+    'EEM.NYSE', # EMERGING MARKETS
+    'IEMG.NYSE', # EMERGING MARKETS
+    'BAC.NYSE',
+    'CBRE.NYSE', # REAL ESTATE
+
     ]
 }
-
-spread_symbols = [
-    'XTIUSD',
-    'XBRUSD',
-    'XAGUSD',
-    'XPDUSD',
-    'XAUUSD',
-    'XNGUSD',
-    'UK100',
-    'DE30',
-    'US500',
-    'US30',
-    'USTEC',
-    'XLF',
-    'XLU',
-    'VIXM',
-    'VIXY',
-    'BAC',
-    'REET',
-    'IWF',
-    'IWD',
-]
-
-
-# Stocks, and some indices have been omitted
-fx_symbols = {
-    'majors': [
-    'EUR/USD', 'USD/JPY', 'GBP/USD', 'USD/CHF', 
-    'EUR/CHF', 'AUD/USD', 'USD/CAD', 'NZD/USD', 
-    'EUR/GBP', 'EUR/JPY', 'GBP/JPY', 'CHF/JPY', 
-    'GBP/CHF', 'EUR/AUD', 'EUR/CAD', 'AUD/CAD', 
-    'AUD/JPY', 'CAD/JPY', 'NZD/JPY', 'GBP/CAD', 
-    'GBP/NZD', 'GBP/AUD', 'AUD/NZD', 'AUD/CHF',
-    'NZD/CHF', 'CAD/CHF', 'NZD/CAD', 'EUR/NZD',
-    ],
-    'others': [
-    'USD/SEK', 'EUR/SEK', 'EUR/NOK', 'USD/NOK', 'USD/MXN', 
-    'USD/ZAR', 'USD/HKD', 
-    'ZAR/JPY', 'USD/TRY', 'EUR/TRY',  
-     'TRY/JPY', 'USD/ILS', 
-    'USD/CNH', 'AUS200', 'ESP35', 'FRA40', 
-    'GER30', 'HKG33', 'JPN225', 'NAS100', 
-    'SPX500', 'UK100', 'US30', 'Copper', 
-    'USDOLLAR', 'US2000', 'USOil', 'UKOil', 
-    'SOYF', 'NGAS', 'WHEATF', 'CORNF', 'XAU/USD', 'XAG/USD',
-    'BTC/USD', 'BCH/USD', 'ETH/USD', 'LTC/USD'
-    ]
-}
-
 
 fin_symbols = [
-    'MOO', 
+    # 'MOO', 
     'HYG', 
     'VIXM', 
     'VIXY', 
-    'XLF', 
-    'XLU', 
+    # 'XLF', 
+    # 'XLU', 
     'XLY', 
-    'XLP', 
+    # 'XLP', 
     'IWF', 
     'IWD', 
-    'BAC', 
+    # 'BAC', 
     'REET',
     'OANDA:XCU_USD',
 ]
 
 spreads = [
-    ['Copper, XAU/USD'],
-    
+    'XTIUSD_XAUUSD',
+    'XTIUSD_XAGUSD',
+    'XTIUSD_XBRUSD',
+    'XAGUSD_XAUUSD',
+    'XPDUSD_XAGUSD',
+    'XNGUSD_XAUUSD',
+    'XCUUSD_XAUUSD',
+    'XNGUSD_XTIUSD',
+    'UK100_US30',
+    'UK100_US500'
+    'UK100_USTEC',
+    'DE30_US30',
+    'DE30_US500',
+    'DE30_USTEC',
+    'US30_US500',
+    'US30_USTEC',
+    'US500_USTEC',
+    'XLF.NYSE_XLU.NYSE',
+    'VYM.NYSE_LQD.NYSE',
+    'VYM.NYSE_TLT.NYSE',
+    'DBA.NYSE_MOO.NYSE',
+    'BAC.NYSE_CBRE.NYSE',
+    'XLE.NYSE_XLI.NYSE',
+    'XOP.NYSE_LQD.NYSE',
+    'EEM.NYSE_TLT.NYSE',
+    'MOO.NYSE_MOO.NYSE',
+    'XLP.NYSE_XOP.NYSE',
 ]
 
 fx_timeframes = {
