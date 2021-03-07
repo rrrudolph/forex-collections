@@ -11,7 +11,7 @@ from datetime import datetime
 import concurrent.futures
 from create_db import ohlc_db
 from symbols_lists import fin_symbols, seconds_per_candle
-from tokens import fin_token
+from tokens import fin_token, mt5_login, mt5_pass
 
 ohlc_con = sqlite3.connect(ohlc_db)
 
@@ -148,9 +148,11 @@ def timeframes_to_request():
 
 def _format_mt5_data(df):
     
-    df = df.rename(columns={'time': 'dt', 'tick_volume': 'volume'})
-    df.dt = pd.to_datetime(df.dt, unit='s')
-    df.dt = df.dt - pd.Timedelta('6 hours')
+    df = df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
+    df.datetime = pd.to_datetime(df.datetime, unit='s')
+    df.datetime = df.datetime + pd.Timedelta('8 hours')
+    df.index = df.datetime
+    df = df[['open', 'high', 'low', 'close', 'volume']]
 
     return df
 
@@ -158,7 +160,7 @@ def mt5_ohlc_request(symbol, timeframe, num_candles=70):
     ''' Since this data is already stored locally, only request the minimum
     required for trade scanning. '''
 
-    if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
+    if not mt5.initialize(login=mt5_login, server="ICMarkets-Demo",password=mt5_pass):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
 
