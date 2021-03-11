@@ -15,7 +15,7 @@ from tokens import fin_token, mt5_login, mt5_pass
 
 ohlc_con = sqlite3.connect(ohlc_db)
 
-''' I have to subtract 6 hours from Finnhub data (just like MT5) to get it into CST.
+''' I have to subtract 6 hours from Finnhub data  to get it into CST.
 so a couple conversions take place from saving and requesting '''
 
 def _get_latest_datetime(symbol, timeframe):
@@ -172,13 +172,11 @@ def mt5_ohlc_request(symbol, timeframe, num_candles=70):
         try:
             rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
         except:
-            print(f'failed to retrieve {symbol} {timeframe} data')
+            print(f'\n ~~~ failed to retrieve {symbol} {timeframe} data ~~~')
             return None
 
     df = pd.DataFrame(rates)
-    # print(df)
     df = _format_mt5_data(df)
-    # print(df)
 
     return df
 
