@@ -11,18 +11,11 @@ import mplfinance as mpf
 from create_db import ohlc_db
 
 ohlc_con = sqlite3.connect(ohlc_db)
+vol_tick = pd.DataFrame()
 
 
-def _request_ticks_and_resample(pair, days, period):
+def _request_ticks_and_resample(pair, period, _from):
     ''' Ticks will be resampled into 1 second bars '''
-
-    try:
-        df = pd.read_sql(f'SELECT * FROM USD', ohlc_con)
-        df.index = pd.to_datetime(df.index)
-        _from = df.tail(1).index
-        _from -= pd.Timedelta('4 days')
-    except:
-        _from = datetime.now() - pd.Timedelta(f'{days} day')
 
     _to = datetime.now()
 
@@ -32,29 +25,40 @@ def _request_ticks_and_resample(pair, days, period):
     df = df.rename(columns = {df.columns[0]: 'datetime'})
 
     df.datetime = pd.to_datetime(df.datetime, unit='s')
-    df = df.set_index(df.datetime, drop=True)
+    df = df.set_index(df.datetime, drop=True)       
 
-    # save volume (count each tick)
+    # Save volume (count each tick)
     df.volume = 1
 
-    # to avoid spikes due to a widening spread get an average price
+    # To avoid spikes due to a widening spread get an average price
     df['price'] = (df.bid + df.ask) / 2 
     df = df[['price', 'volume']]
 
-    # Resample, fill blanks, and get rid of the multi level column index
-    df = df.resample(period).agg({'price': 'ohlc', 'volume': 'sum'})
-    df = df.fillna(method='ffill')
-    df.columns = df.columns.get_level_values(1)
+    open = df.price.resample(period).first()
+    high = df.price.resample(period).max()
+    low = df.price.resample(period).min()
+    close = df.price.resample(period).last()
+    volume = df.volume.resample(period).sum()
+    
+    resampled = pd.DataFrame({'open': open,
+                            'high': high,
+                            'low': low,
+                            'close': close,
+                            'volume': volume
+                             })
+    
+    # Check for nan volume rows and set to 0
+    resampled.volume.replace(np.nan, 0)
 
-    return df
+    # Any remaining nans should be forward filled
+    resampled = resampled.fillna(method='ffill')
+
+    return resampled
 
 def _normalize(df):
-    # df.open = (df.open - min(df.open)) / (max(df.open) - min(df.open))
-    # df.high = (df.high - min(df.high)) / (max(df.high) - min(df.high))
-    # df.low = (df.low - min(df.low)) / (max(df.low) - min(df.low))
-    # df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
-    # df.volume = (df.volume - min(df.volume)) / (max(df.volume) - min(df.volume))
-    df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
+    
+    # I want the real volume
+    df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)) if x.name != 'volume' else x)
     
     return df
 
@@ -70,7 +74,6 @@ def _diff(df):
 def _cumsum(df):
 
     df = df.apply(lambda x: x.cumsum() if x.name != 'volume' else x)
-
     return df
 
 def _invert(df):
@@ -94,40 +97,60 @@ def _resample(df, final_period):
     low = df.low.resample(final_period).min()
     close = df.close.resample(final_period).last()
     volume = df.volume.resample(final_period).sum()
+    voltick = df.voltick.resample(final_period).last()
     
     resampled = pd.DataFrame({'open': open,
                             'high': high,
                             'low': low,
                             'close': close,
-                            'volume': volume
+                            'volume': volume,
+                            'voltick': voltick
                              })
 
     return resampled
 
+def _final_ohlc_cleaning(df):
+
+    # Set open prices to equal the former close
+    df.open = df.close.shift(1)
+
+    # Make sure high is highest and low is lowest
+    for row in df.itertuples(index=True, name=None):
+        i = row[0]
+        df.loc[i, 'high'] = max(df.loc[i, ['open', 'high', 'low', 'close']])
+        df.loc[i, 'low'] = min(df.loc[i, ['open', 'high', 'low', 'close']])
+
+    # Finally, drop duplicates since it seems resampling creates weekend data
+    df = df.drop_duplicates(subset=['open', 'high', 'low', 'close'])
+    df = df.dropna(subset=['open'])
+    
+    return df
+
 def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
-    ''' The times been adjusted to CST. '''
+    '''  '''
 
     if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
     
     # This dict will store the currency indexes as data is received
-    ccys = {'USD': [],
-              'EUR': [],
-              'GBP': [],
-              'JPY': [],
-              'AUD': [],
-              'NZD': [],
-              'CAD': [],
-              'CHF': [],
-              }
+    ccys = {
+        'USD': [],
+        'EUR': [],
+        'GBP': [],
+        'JPY': [],
+        'AUD': [],
+        'NZD': [],
+        'CAD': [],
+        'CHF': [],
+    }
+    
+    # Create this timestamp outside of loop so it doesn't change
+    _from = datetime.now() - pd.Timedelta(f'{days} day')
 
     for pair in pairs:
         
-        df = _request_ticks_and_resample(pair, days, initial_period)
-
-        # Adjust to CST
-        df.index = df.index - pd.Timedelta('6 hours')
+        df = _request_ticks_and_resample(pair, initial_period, _from)
         
         # Rather than deal with the prices, use the diff from one price to the next
         df = _diff(df)
@@ -138,8 +161,7 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
         df = _cumsum(df)
         df = _normalize(df)
 
-        # Add the df to its proper dict currency, inverting prices for the counter currency
-        # If blank, add in first df as is. else, add in place
+        # Add the df to its proper dict currency
         for ccy in ccys:
 
             if ccy == pair[:3]:
@@ -155,51 +177,52 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
                     ccys[ccy] = inverted
                 else:
                     ccys[ccy] += inverted
+    
+    # vol_tick = pd.DataFrame()   putting this in global for now
+    # Save the volume in its 1sec format for plotting later
+    for ccy in ccys:
+        df = ccys[ccy]
+        hour_mean = df.volume.rolling(60*60).mean()
+        rolling_max = df.volume.rolling(60*240).max()
 
+        ccys[ccy]['voltick'] = df.close[
+                                    (df.volume > hour_mean * 3)
+                                    |
+                                    (df.volume >= rolling_max)
+                                    ]
+
+        print('number of voltick signals:', len(df[df.voltick.notna()]))
     # Resample into 1 min
     for ccy in ccys:
         ccys[ccy] = _resample(ccys[ccy], final_period)
     
-        # Reset open prices to equal the former close
-        df = ccys[ccy]
-        df = df.dropna()
-        first_open = df.open.head(1)[0]
-        first_row = df.head(1).index[0]
-        df.open = df.close.shift(1)
-        df.loc[first_row, 'open'] = first_open 
-
-        # make sure high is highest and llow is lowest
-        for row in df.itertuples(index=True, name=None):
-            i = row[0]
-            df.loc[i, 'high'] = max(df.loc[i, ['open', 'high', 'low', 'close']])
-            df.loc[i, 'low'] = min(df.loc[i, ['open', 'high', 'low', 'close']])
-        ccys[ccy] = df
+        ccys[ccy] = _final_ohlc_cleaning(ccys[ccy])
 
     return ccys
+
+
 
 def save_data(ccys):
     ''' Try to append the data from the last row onward.  Otherwise save everything. '''
 
+    # try:
+    #     db = pd.read_sql("""SELECT * FROM USD 
+    #                         ORDER BY datetime DESC 
+    #                         LIMIT 1""", ohlc_con, parse_dates=True)
+    #     db.index = pd.to_datetime(db.index)
 
-    try:
-        db = pd.read_sql("""SELECT * FROM USD 
-                            ORDER BY datetime DESC 
-                            LIMIT 1""", ohlc_con)
-        db.index = pd.to_datetime(db.index)
-
-        for ccy in ccys:
-            df = ccys[ccy]
-            df = df[df.index > db.index[0]]
-            df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
+    #     for ccy in ccys:
+    #         df = ccys[ccy]
+    #         df = df[df.index > db.index[0]]
+    #         df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
     
-    except:
+    # except:
        
-        for ccy in ccys:
-            df = ccys[ccy]
-            df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
+    for ccy in ccys:
+        df = ccys[ccy]
+        df.to_sql(f'{ccy}', ohlc_con, if_exists='replace', index=True)
+        # df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
         
-
-
 
 def save_index_data_for_mt5(indexes):
     ''' format the data for mt5 and save to csv. '''
@@ -212,9 +235,9 @@ def save_index_data_for_mt5(indexes):
         df['date'] = [d.date() for d in df.index]
         df['time'] = [d.time() for d in df.index]
         df['r_vol'] = 0
-        df['spread'] = 1
+        df['spread'] = 0
         
-        # reorder (real volume and spread are ok to be nan i think)
+        # reorder
         df = df[['date', 'time', 'open', 'high', 'low', 'close', 'volume', 'r_vol', 'spread']]
 
         # save to csv
@@ -224,11 +247,152 @@ def save_index_data_for_mt5(indexes):
 
 
 # it took 9 min 33 sec to save 60 days of data (~5mil rows of tick data requested 28 times)
+# 10 days will give you 793029 rows of 1s data
 if __name__ == '__main__':
-
+    ''' '''
     # while True:
     s = time.time()
-    indexes = make_ccy_indexes(mt5_symbols['majors'], days=5)
-    # save_data(indexes)
+
+    indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='15 min', days=8)
+    save_data(indexes)
     save_index_data_for_mt5(indexes)
-    print((time.time() - s )/ 60)
+
+    df = indexes['EUR']
+    # df = df.reset_index()  # otherwise plot weekend gaps
+
+    
+    import plotly.graph_objects as go
+    fig = go.Figure(data=[go.Candlestick(x=df.index,
+                                        open=df.open, 
+                                        high=df.high,
+                                        low=df.low, 
+                                        close=df.close,
+    increasing_line_color= 'gray', decreasing_line_color= 'gray'
+    )])
+
+    # ADD VOLTICK MARKERS
+    fig.add_trace(go.Scatter(
+    x=df.index[df.voltick.notna()],
+    y=df.voltick[df.voltick.notna()],
+    mode="markers",
+    name="voltick",
+    # color='#000000'
+    # text=ratings,
+    # textposition="top center"
+    ))
+
+    fig.update(layout_xaxis_rangeslider_visible=False)
+    fig.update_layout(
+    # remove this "xaxis" section to show weekend gaps
+    xaxis = dict(  
+                type="category"),
+    paper_bgcolor="LightSteelBlue",  
+)
+    fig.show()
+
+    time.sleep(1)
+
+    df = indexes['AUD']
+    # df = df.reset_index()  # otherwise plot weekend gaps
+
+    
+    import plotly.graph_objects as go
+    fig = go.Figure(data=[go.Candlestick(x=df.index,
+                                        open=df.open, 
+                                        high=df.high,
+                                        low=df.low, 
+                                        close=df.close,
+    increasing_line_color= 'gray', decreasing_line_color= 'gray'
+    )])
+
+    # ADD VOLTICK MARKERS
+    fig.add_trace(go.Scatter(
+    x=df.index[df.voltick.notna()],
+    y=df.voltick[df.voltick.notna()],
+    mode="markers",
+    name="voltick",
+    # color='#000000'
+    # text=ratings,
+    # textposition="top center"
+    ))
+
+    fig.update(layout_xaxis_rangeslider_visible=False)
+    fig.update_layout(
+    # remove this "xaxis" section to show weekend gaps
+    xaxis = dict(  
+                type="category"),
+    paper_bgcolor="LightSteelBlue",  
+)
+    fig.show()
+
+    time.sleep(1)
+
+    df = indexes['NZD']
+    # df = df.reset_index()  # otherwise plot weekend gaps
+
+    
+    import plotly.graph_objects as go
+    fig = go.Figure(data=[go.Candlestick(x=df.index,
+                                        open=df.open, 
+                                        high=df.high,
+                                        low=df.low, 
+                                        close=df.close,
+    increasing_line_color= 'gray', decreasing_line_color= 'gray'
+    )])
+
+    # ADD VOLTICK MARKERS
+    fig.add_trace(go.Scatter(
+    x=df.index[df.voltick.notna()],
+    y=df.voltick[df.voltick.notna()],
+    mode="markers",
+    name="voltick",
+    # color='#000000'
+    # text=ratings,
+    # textposition="top center"
+    ))
+
+    fig.update(layout_xaxis_rangeslider_visible=False)
+    fig.update_layout(
+    # remove this "xaxis" section to show weekend gaps
+    xaxis = dict(  
+                type="category"),
+    paper_bgcolor="LightSteelBlue",  
+)
+    fig.show()
+
+    time.sleep(1)
+
+    df = indexes['CAD']
+    # df = df.reset_index()  # otherwise plot weekend gaps
+
+    
+    import plotly.graph_objects as go
+    fig = go.Figure(data=[go.Candlestick(x=df.index,
+                                        open=df.open, 
+                                        high=df.high,
+                                        low=df.low, 
+                                        close=df.close,
+    increasing_line_color= 'gray', decreasing_line_color= 'gray'
+    )])
+
+    # ADD VOLTICK MARKERS
+    fig.add_trace(go.Scatter(
+    x=df.index[df.voltick.notna()],
+    y=df.voltick[df.voltick.notna()],
+    mode="markers",
+    name="voltick",
+    # color='#000000'
+    # text=ratings,
+    # textposition="top center"
+    ))
+
+    fig.update(layout_xaxis_rangeslider_visible=False)
+    fig.update_layout(
+    # remove this "xaxis" section to show weekend gaps
+    xaxis = dict(  
+                type="category"),
+    paper_bgcolor="LightSteelBlue",  
+)
+    fig.show()
+
+    time.sleep(1)
