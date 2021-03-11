@@ -21,14 +21,14 @@ I will break the correlations up into 4 groups to capture a period of 15 mins, 2
 1 day, and 1 week.  Roughly at least.
 '''
 
-# How much historical data you want (days * mins/5)
-HIST_CANDLES = 4660
+# How much historical data you want 
+HIST_CANDLES = 11520  # 40 days
 
 # Settings for each time horizon 
 settings = {
 'LTF': {
     'NUM_CANDLES': HIST_CANDLES,  # once the historical data is filled out this should be edited for efficiency
-    'CORR_PERIOD': 576,  # 2 days
+    'CORR_PERIOD': 864,  # 3 days
     'MIN_CORR': abs(0.7),
     'LOOKBACK_1': 1,  # 5 min
     'LOOKBACK_2': 3,  # 15 min
@@ -36,7 +36,7 @@ settings = {
     },
 'MTF': {
     'NUM_CANDLES': HIST_CANDLES,
-    'CORR_PERIOD': 1152,  # 4 days
+    'CORR_PERIOD': 1440,  # 5 days
     'MIN_CORR': abs(0.65),
     'LOOKBACK_1': 12,  # 1 hour
     'LOOKBACK_2': 72,  # 6 hours
@@ -44,8 +44,8 @@ settings = {
     },
 'HTF': {
     'NUM_CANDLES': HIST_CANDLES,
-    'CORR_PERIOD': 2304,  # 8 days
-    'MIN_CORR': abs(0.6),
+    'CORR_PERIOD': 5760,  # 20 days
+    'MIN_CORR': abs(0.65),
     'LOOKBACK_1': 288,   # 1 day
     'LOOKBACK_2': 720,   # 2.5 days
     'LOOKBACK_3': 1440,  # 5 days
@@ -94,13 +94,18 @@ def find_correlations():
         return df
 
     def _diffs_over_lookbacks(df, row):
-        ''' Return a Series of diff values '''
+        ''' Return a Series of diff values. In order to use the integer
+        lookbacks, create a range index column. '''
+
+        i = df.loc[row, 'range_index']
+        row1 = df.index[df.range_index == i - LOOKBACK_1]
+        row2 = df.index[df.range_index == i - LOOKBACK_2]
+        row3 = df.index[df.range_index == i - LOOKBACK_3]
 
         s = pd.Series(dtype=int)
-
-        s.loc[0] = df.loc[row, 'close'] - df.loc[row - LOOKBACK_1, 'close']
-        s.loc[1] = df.loc[row, 'close'] - df.loc[row - LOOKBACK_2, 'close']
-        s.loc[2] = df.loc[row, 'close'] - df.loc[row - LOOKBACK_3, 'close']
+        s.loc[0] = (df.loc[row, 'close'] - df.loc[row1, 'close']).values[0]
+        s.loc[1] = (df.loc[row, 'close'] - df.loc[row2, 'close']).values[0]
+        s.loc[2] = (df.loc[row, 'close'] - df.loc[row3, 'close']).values[0]
 
         return s
 
@@ -134,7 +139,6 @@ def find_correlations():
     # The outer loop will iter over the various correlation periods to emulate MTF value
     # Each corr period will get saved to its own table in the db
     for tf in settings:
-        print(settings[tf])
         CORR_PERIOD = settings[tf]['CORR_PERIOD']
         MIN_CORR = settings[tf]['MIN_CORR']
         LOOKBACK_1 = settings[tf]['LOOKBACK_1']
@@ -160,10 +164,6 @@ def find_correlations():
                 temp_key_df = _normalize(temp_key_df)
                 cor_df = _normalize(cor_df)
 
-                # Now that I've aligned via datetimes I want to switch out the 
-                # datetime index for a regular numeric range
-                temp_key_df = temp_key_df.reset_index(drop=False)
-                cor_df = cor_df.reset_index(drop=False)
 
                 # I only want to find symbols that lead price so I will use a shift
                 # (the the key_symbol into the future so its lagging)
@@ -176,29 +176,32 @@ def find_correlations():
                 # print('key',key_symbol)
                 # print('cor',cor_symbol)
                 # print('abs diff cor - cor_lagging:', abs(cor_values.sum()) - abs(cor_values_lagging).sum())
+                if abs(cor_values.sum()) > abs(cor_values_lagging).sum():
+                    print(f'{cor_symbol} is a good value line for {key_symbol}')
 
                 # Get list of rows where correlation is above threshold
                 cor_rows = cor_values[cor_values > abs(MIN_CORR)].index.tolist()
-                print('cor count:',len(cor_rows))
+                # print('cor count:',cor_rows)
 
+                # Create range index columns to use with integer LOOKBACKs
+                temp_key_df['range_index'] = range(0, len(temp_key_df))
+                cor_df['range_index'] = range(0, len(cor_df))
 
                 # # Compare the normalized price differences between the key
                 # # and cor symbols.  Im saving the initial correlation
                 # # value to use later as a coefficient in deriving a buy/sell rating.
                 for row in cor_rows:
 
-                    if row < LOOKBACK_3:
+                    if temp_key_df.loc[row, 'range_index'] < LOOKBACK_3:
                         continue
 
                     key_diffs = _diffs_over_lookbacks(temp_key_df, row)
                     cor_diffs = _diffs_over_lookbacks(cor_df, row)
 
                     # Get the new correlation values
-                    shortterm_cor = key_diffs.corr(cor_diffs)
                     longterm_cor = cor_values.loc[row]
-                    
+
                     # Save the sum of the diffs and correlation values
-                    final_df.loc[row, 'datetime'] = temp_key_df.loc[row, 'datetime']
                     final_df.loc[row, f'*{key_symbol}*'] = round(key_diffs.sum(), 3)
                     final_df.loc[row, f'{cor_symbol}'] = round(cor_diffs.sum(), 3)
                     final_df.loc[row, f'{cor_symbol}_corr'] = round(longterm_cor, 3)
@@ -209,28 +212,28 @@ def find_correlations():
                 cor_df = _make_spread(spread)
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy()
                 cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
-                temp_key_df = temp_key_df.reset_index(drop=False)
-                cor_df = cor_df.reset_index(drop=False)
 
                 cor_values = temp_key_df.close.shift(-7).rolling(CORR_PERIOD).corr(cor_df.close)
                 cor_values_lagging = temp_key_df.close.shift(7).rolling(CORR_PERIOD).corr(cor_df.close)
-                # print('\n cor_values:', cor_values)
-                # print('cor_values_lagging:', cor_values_lagging)
-                # print('abs diff:', abs(cor_values) - abs(cor_values_lagging))
+                if abs(cor_values.sum()) > abs(cor_values_lagging).sum():
+                    print(f'{cor_symbol} is a good value line for {key_symbol}')
+                    
                 cor_rows = cor_values[cor_values > abs(MIN_CORR)].index.tolist()
+                temp_key_df['range_index'] = range(0, len(temp_key_df))
+                cor_df['range_index'] = range(0, len(cor_df))
                 # print('\n cor count:',len(cor_rows))
 
                 for row in cor_rows:
 
-                    if row < LOOKBACK_3:
+                    if temp_key_df.loc[row, 'range_index'] < LOOKBACK_3:
                         continue
 
                     key_diffs = _diffs_over_lookbacks(temp_key_df, row)
                     cor_diffs = _diffs_over_lookbacks(cor_df, row)
                     longterm_cor = cor_values.loc[row]
 
+
                     # Save the sum of the diffs and correlation values
-                    final_df.loc[row, 'datetime'] = temp_key_df.loc[row, 'datetime']
                     final_df.loc[row, f'*{key_symbol}*'] = round(key_diffs.sum(), 3)
                     final_df.loc[row, f'{spread}'] = round(cor_diffs.sum(), 3)
                     final_df.loc[row, f'{spread}_corr'] = round(longterm_cor, 3)
@@ -238,7 +241,7 @@ def find_correlations():
 
             # Once all the symbols and spreads have been analyzed, save the data
             # before continuing on to the next FX major symbol
-            final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=False)
+            final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
 
 s = time.time()
 find_correlations()
