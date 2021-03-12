@@ -6,7 +6,7 @@ import time
 import pathlib
 import sqlite3
 from ohlc_request import mt5_ohlc_request
-from symbols_lists import mt5_symbols
+from symbols_lists import mt5_symbols, indexes
 import mplfinance as mpf
 from create_db import ohlc_db
 
@@ -132,18 +132,7 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
     if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
-    
-    # This dict will store the currency indexes as data is received
-    ccys = {
-        'USD': [],
-        'EUR': [],
-        'GBP': [],
-        'JPY': [],
-        'AUD': [],
-        'NZD': [],
-        'CAD': [],
-        'CHF': [],
-    }
+
     
     # Create this timestamp outside of loop so it doesn't change
     _from = datetime.now() - pd.Timedelta(f'{days} day')
@@ -161,31 +150,31 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
         df = _cumsum(df)
         df = _normalize(df)
 
-        # Add the df to its proper dict currency
-        for ccy in ccys:
+        # Add the df to its proper dict index
+        for ccy in indexes:
 
             if ccy == pair[:3]:
-                if len(ccys[ccy]) == 0:
-                    ccys[ccy] = df
+                if len(indexes[ccy]) == 0:
+                    indexes[ccy] = df
                 else:
-                    ccys[ccy] += df
+                    indexes[ccy] += df
                 continue
             
             # Counter currency
             if ccy == pair[-3:]:
-                if len(ccys[ccy]) == 0:
-                    ccys[ccy] = inverted
+                if len(indexes[ccy]) == 0:
+                    indexes[ccy] = inverted
                 else:
-                    ccys[ccy] += inverted
+                    indexes[ccy] += inverted
     
     # vol_tick = pd.DataFrame()   putting this in global for now
     # Save the volume in its 1sec format for plotting later
-    for ccy in ccys:
-        df = ccys[ccy]
+    for ccy in indexes:
+        df = indexes[ccy]
         hour_mean = df.volume.rolling(60*60).mean()
         rolling_max = df.volume.rolling(60*240).max()
 
-        ccys[ccy]['voltick'] = df.close[
+        indexes[ccy]['voltick'] = df.close[
                                     (df.volume > hour_mean * 3)
                                     |
                                     (df.volume >= rolling_max)
@@ -193,16 +182,16 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
 
         print('number of voltick signals:', len(df[df.voltick.notna()]))
     # Resample into 1 min
-    for ccy in ccys:
-        ccys[ccy] = _resample(ccys[ccy], final_period)
+    for ccy in indexes:
+        indexes[ccy] = _resample(indexes[ccy], final_period)
     
-        ccys[ccy] = _final_ohlc_cleaning(ccys[ccy])
+        indexes[ccy] = _final_ohlc_cleaning(indexes[ccy])
 
-    return ccys
+    return indexes
 
 
 
-def save_data(ccys):
+def save_data(indexes):
     ''' Try to append the data from the last row onward.  Otherwise save everything. '''
 
     # try:
@@ -211,15 +200,15 @@ def save_data(ccys):
     #                         LIMIT 1""", ohlc_con, parse_dates=True)
     #     db.index = pd.to_datetime(db.index)
 
-    #     for ccy in ccys:
-    #         df = ccys[ccy]
+    #     for ccy in indexes:
+    #         df = indexes[ccy]
     #         df = df[df.index > db.index[0]]
     #         df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
     
     # except:
        
-    for ccy in ccys:
-        df = ccys[ccy]
+    for ccy in indexes:
+        df = indexes[ccy]
         df.to_sql(f'{ccy}', ohlc_con, if_exists='replace', index=True)
         # df.to_sql(f'{ccy}', ohlc_con, if_exists='append', index=True)
         
