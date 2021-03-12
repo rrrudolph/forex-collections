@@ -81,6 +81,19 @@ spreads = [
     'XLP.NYSE_XOP.NYSE',
 ]
 
+    
+# This dict will store the currency indexes as data is received
+indexes = {
+    'USD': [],
+    'EUR': [],
+    'GBP': [],
+    'JPY': [],
+    'AUD': [],
+    'NZD': [],
+    'CAD': [],
+    'CHF': [],
+}
+
 fx_timeframes = {
     '1': 'm1',
     '5': 'm5',
