@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import time
+import sqlite3
 from datetime import datetime
 from ohlc_request import mt5_ohlc_request
 from symbols_lists import mt5_symbols
@@ -9,10 +10,13 @@ from indexes import make_ccy_indexes
 from entry_signals import atr
 from tokens import forecast_sheet, ohlc_sheet, bonds_sheet
 from ff_calendar_request import rate_weekly_forecasts, rate_monthly_outlook
+from create_db import ohlc_db
 
 
+OHLC_CON = sqlite3.connect(ohlc_db)
 
-def _upload_bonds(timeframe, sheet=bonds_sheet):
+
+def _read_bonds(timeframe, sheet=bonds_sheet):
     ''' get the bond data and normalize for plotting with ohlc index data '''
     
     df = pd.DataFrame(sheet.get_all_values())
@@ -39,17 +43,17 @@ def _upload_bonds(timeframe, sheet=bonds_sheet):
     # norm
     df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
 
-    # create the "counter pair" for each symbol. ie USD10Y against everything.
+    # create the "counter pair" for each symbol. ie USD10Y - DE - GB - JP....
     # so iter thru list of columns and whichever one im on, get sum of every
     # column except the current one. once that's done, I will re-normalize
     # and then create the actual spread. the spread will just be the current
-    # iter minus that aggregate sum that was normalized.
+    # iterable minus that aggregate sum that was normalized.
     agg_sum = df.apply(lambda x: x.sum(), axis=1)
 
     symbols = {}
     for name in df.columns.tolist():
         x = agg_sum - df[f'{name}']
-        x = (x - min(x)) / (max(x) - min(x))
+        x = (x - min(x)) / (max(x) - min(x))  # no need to average
         x = df[f'{name}'] - x
         symbols[name] = x
 
@@ -63,10 +67,15 @@ def _upload_bonds(timeframe, sheet=bonds_sheet):
 
     return final
 
-# _upload_bonds('15 min')
-def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
 
-    indexes = make_ccy_indexes(mt5_symbols['majors'], timeframe, initial_period='5s', days=days)
+def _read_indexes(timeframe, days, sheet=ohlc_sheet):
+    ''' Get the index data from the data base to plot on ghseets '''
+
+    ccys = ['']    
+    # Read from the index database and then resample
+    df = pd.read_sql(f'''SELECT * from {ccy}
+                    ORDER BY datetime DESC
+                    LIMIT 1''', OHLC_CON)
     
     ohlc = pd.DataFrame()
     for ccy, df in indexes.items():
@@ -77,9 +86,8 @@ def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
     ohlc = ohlc.merge(bonds, left_index=True, right_index=True)
 
     # Norm the values for just whatevers gonna be charted
-    print(ohlc)
+    ohlc = ohlc.dropna()
     ohlc = ohlc.apply(lambda x: (x - min(x)) / (max(x) - min(x)))
-    print(ohlc)
 
 
     # Make a dt column for charting and move it to front
@@ -87,10 +95,11 @@ def upload_ohlc(timeframe, days, sheet=ohlc_sheet):
     ohlc = ohlc[ ['datetime'] + [ col for col in ohlc.columns if col != 'datetime' ] ]
     ohlc.index = ohlc.index.astype(str)
     ohlc.datetime = ohlc.datetime.astype(str)
-    # sheet.clear()
-    # sheet.update([ohlc.columns.values.tolist()] + ohlc.values.tolist())
+    ohlc = ohlc.fillna(method='ffill')
+    ohlc = ohlc.drop_duplicates(subset=['USD', 'EUR', 'GBP'])
 
-upload_ohlc('15min', days=10)
+    sheet.clear()
+    sheet.update([ohlc.columns.values.tolist()] + ohlc.values.tolist())
 
 
 def _upload_adr(sheet=forecast_sheet):
@@ -163,7 +172,7 @@ def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
 
     # First get a df of however much data you want to normalize against
     # the horizon doesn't change anything if its friday cuz the cal URL is still same week
-    df = rate_weekly_forecasts(datetime.now()-pd.Timedelta('3 days'), horizon=horizon)
+    df = rate_weekly_forecasts(datetime.now(), horizon=horizon, save_to_db=True)
     df.index = df.event_datetime
 
 
@@ -209,9 +218,10 @@ def upload_forecasts(horizon='48 hour', sheet=forecast_sheet):
 
 
 
-# upload_ohlc('15min', days=2)
-# while True:
+while True:
 
 
-#     upload_forecasts(horizon='120 hour')
-#     time.sleep(20*60)
+    upload_ohlc('15min', days=5)
+    time.sleep(60)
+    upload_forecasts(horizon='48 hour')
+    time.sleep(30*60)
