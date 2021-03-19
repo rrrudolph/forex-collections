@@ -5,7 +5,7 @@ from datetime import datetime
 import time
 import pathlib
 import sqlite3
-from ohlc_request import mt5_ohlc_request
+from ohlc_request import _market_open
 from symbols_lists import mt5_symbols
 import mplfinance as mpf
 from create_db import ohlc_db
@@ -134,11 +134,14 @@ def _final_ohlc_cleaning(df, ccy):
     if df.isna().sum().any() > 0:
         print(ccy)
         print('nans found')
-        print(df.isna())
+        print(df.isna().sum())
+        print('dropping...')
+    
+    df = df.dropna()
 
     return df
 
-def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
+def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60, _from=None):
     '''  '''
 
     if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
@@ -155,9 +158,15 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
         'CAD': [],
         'CHF': [],
     }
-    # Create this timestamp outside of loop so it doesn't change
+    # Create this timestamp outside of loop so it doesn't change.
+    # _from gets passed when a continuous db update is being used and becomes
+    # the last timestamp in the db
     _to = datetime.now()
-    _from = _to - pd.Timedelta(f'{days} day')
+
+    if _from is None:
+        _from = _to - pd.Timedelta(f'{days} day')
+    else:
+        _from -= pd.Timedelta('3 day')
 
     for pair in pairs:
         
@@ -190,6 +199,7 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
                     indexes[ccy] += inverted
     
     # Voltick
+    # the better way to do this is just to save the 1 second data raw. then run some science.
     # for ccy in indexes:
     #     df = indexes[ccy]
     #     hour_mean = df.volume.rolling(60*60).mean()
@@ -211,28 +221,12 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60):
 
     return indexes
 
-def save_data(indexes):
-    ''' Try to append the data from the last row onward.  Otherwise save everything. '''
-
-    # try:
-    #     db = pd.read_sql("""SELECT * FROM USD 
-    #                         ORDER BY datetime DESC 
-    #                         LIMIT 1""", OHLC_CON, parse_dates=True)
-    #     db.index = pd.to_datetime(db.index)
-
-    #     for ccy in indexes:
-    #         df = indexes[ccy]
-    #         df = df[df.index > db.index[0]]
-    #         df.to_sql(f'{ccy}', OHLC_CON, if_exists='append', index=True)
-    
-    # except:
+def _save_data(df, ccy):
        
-    for ccy in indexes:
-        df = indexes[ccy]
-        df.to_sql(f'{ccy}', OHLC_CON, if_exists='replace', index=True)
-        # df.to_sql(f'{ccy}', OHLC_CON, if_exists='append', index=True)
+    # df.to_sql(f'{ccy}', OHLC_CON, if_exists='replace', index=True)
+    df.to_sql(f'{ccy}', OHLC_CON, if_exists='append', index=True)
     
-    OHLC_CON.close()
+    # OHLC_CON.close()
         
 def save_index_data_for_mt5(indexes):
     ''' format the data for mt5 and save to csv. '''
@@ -255,19 +249,54 @@ def save_index_data_for_mt5(indexes):
         
         df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=False)
 
+def continuous_db_update():
+    ''' Append new data to the db.  In order to get semi smooth price transistions
+    I'll still need to request a few days at a time for normalization '''
+    
+    ccys = [
+        'USD',
+        'EUR',
+        'GBP',
+        'JPY',
+        'AUD',
+        'NZD',
+        'CAD',
+        'CHF',
+    ]
 
-# it took 9 min 33 sec to save 60 days of data (~5mil rows of tick data requested 28 times)
-# 10 days will give you 793029 rows of 1s data
+    timestamps = []
+    for ccy in ccys:
+
+        # Read last timestamp from each ccy and use as the start date for data request
+        df = pd.read_sql(f'''SELECT datetime from {ccy}
+                            ORDER BY datetime DESC
+                            LIMIT 1''', OHLC_CON)
+        df.datetime = pd.to_datetime(df.datetime)
+        timestamps.append(df.values[0])
+
+    first = min(timestamps)[0]
+    indexes = make_ccy_indexes(mt5_symbols['majors'], _from=first)
+
+    # Only append new data
+    for last_timestamp, ccy in zip(timestamps, indexes):
+
+        df = indexes[ccy]
+        df = df[df.index > last_timestamp[0]]
+        _save_data(df, ccy)
+
+# 60 days takes 8.5 mins
 if __name__ == '__main__':
-    ''' '''
-    # while True:
-    s = time.time()
 
-    indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='2 min', days=1)
+    # indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='1 min', days=60)
+    while True:
+        
+        if _market_open:
 
-    save_data(indexes)
-    print('total mins for 120 days:', (time.time() - s) / 60)
-   # save_index_data_for_mt5(indexes)
+            second = datetime.now().second
+            if second == 0:
+
+                continuous_db_update()
+
 
     # eur = indexes['EUR']
     # usd = indexes['USD']
