@@ -18,6 +18,36 @@ ohlc_con = sqlite3.connect(ohlc_db)
 ''' I have to subtract 6 hours from Finnhub data  to get it into CST.
 so a couple conversions take place from saving and requesting '''
 
+
+def _market_open():
+    ''' Check if the FX market is currently open. Returns True or False. '''
+
+    # monday == 0, sunday == 6
+    minute = datetime.now().minute
+    hour = datetime.now().hour
+    day = datetime.now().weekday()
+
+    # Monday thru Thursday
+    if 0 <= day < 4:
+        return True
+
+    # Friday before 430pm CST
+    if day == 5 and hour < 4:
+        return True
+    
+    elif day == 5 and hour == 4 and minute < 30:
+        return True
+
+    # Sunday after 430pm CST
+    if day == 6 and hour < 4:
+        return True
+    
+    elif day == 6 and hour == 4 and minute < 30:
+        return True
+
+    # If nothings been returned at this point market is closed
+    return False
+
 def _get_latest_datetime(symbol, timeframe):
     ''' Get the last ohlc datetime for each symbol '''
 
@@ -150,7 +180,7 @@ def _format_mt5_data(df):
     
     df = df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
     df.datetime = pd.to_datetime(df.datetime, unit='s')
-    df.datetime = df.datetime + pd.Timedelta('8 hours')
+    df.datetime = df.datetime - pd.Timedelta('8 hours')
     df.index = df.datetime
     df = df[['open', 'high', 'low', 'close', 'volume']]
 
@@ -179,7 +209,6 @@ def mt5_ohlc_request(symbol, timeframe, num_candles=70):
     df = _format_mt5_data(df)
 
     return df
-
 
 def _delete_duplicate_rows(symbol):
 
@@ -224,4 +253,6 @@ def infinite_request():
 
 if __name__ == '__main__':
 
-    infinite_request()
+    print(mt5_ohlc_request('EURUSD', mt5.TIMEFRAME_M1, num_candles=5))
+
+    # infinite_request()
