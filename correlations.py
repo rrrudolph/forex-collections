@@ -32,13 +32,13 @@ settings = {
     'MTF': {
         'NUM_CANDLES': HIST_CANDLES,
         'CORR_PERIOD': 1440,  # 5 days
-        'MIN_CORR': abs(0.60),
+        'MIN_CORR': 0.60,
         'SHIFT': 30,
     },
     'HTF': {
         'NUM_CANDLES': HIST_CANDLES,
         'CORR_PERIOD': 5760,  # 20 days
-        'MIN_CORR': abs(0.60),
+        'MIN_CORR': 0.60 ,
         'SHIFT': 300,
     },
 # '4': {
@@ -46,6 +46,7 @@ settings = {
 #     MIN_CORR: abs(0.5),
 #     },
 }
+shift_periods = [0, 10, 50, 150, 300, 500, 700]
 
 # This needs to be changed to the ubuntu laptop path
 OHLC_CON = sqlite3.connect(ohlc_db)
@@ -98,12 +99,16 @@ def _make_spread(spread):
 
     return spread_df
 
-def _append_result_to_final_df(cor_rows, temp_key_df, cor_df, cor_values, key_symbol, cor_symbol, final_df):
+def _append_result_to_final_df(cor_rows, temp_key_df, cor_df, cor_values, key_symbol, cor_symbol, shift, final_df):
     ''' Save close prices and corr value for any correlated pair found before continuing to the next symbol. '''
     for i in cor_rows:
+        if not i in temp_key_df.index:
+            print(i, 'not in key_df index')
+            continue
         final_df.loc[i, f'*{key_symbol}*'] = temp_key_df.loc[i, 'close']
         final_df.loc[i, f'{cor_symbol}'] = cor_df.loc[i, 'close']
         final_df.loc[i, f'{cor_symbol}_corr'] = round(cor_values.loc[i], 3)
+        final_df.loc[i, f'{cor_symbol}_shift'] = shift
 
 def find_correlations():
     ''' Find correlation between FX majors and other symbols and spreads
@@ -146,31 +151,41 @@ def find_correlations():
                 # Ensure matching df lengths
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
                 cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
-
+                if len(temp_key_df) != len(cor_df):
+                    print('mismatched lengths:')
+                    print(key_symbol, cor_symbol)
                 temp_key_df = _normalize(temp_key_df)
                 cor_df = _normalize(cor_df)
 
-                # I only want to find symbols that lead the majors, so while scanning I will shift
-                # the majors back to see if a move correlates with another symbol which would have
-                # already made that move n rows prior
-                cor_values = temp_key_df.close.shift(-SHIFT).rolling(CORR_PERIOD).corr(cor_df.close)
+                # Iter various shifts to find highest cor and save the data to this dict
+                shift_val = {
+                    'data': pd.DataFrame(dtype=np.float32),
+                    'best_sum': 0,
+                    'shift': 0
+                }
+                for shift in shift_periods:
+                    cor_values = temp_key_df.close.rolling(CORR_PERIOD).corr(cor_df.close.shift(shift))
+                    cor_values = cor_values.dropna()
 
-                # Check for randomness by shifting the other way and comparing the 2 shifts.
-                # If the first shift's corr is not greater then its probably not a good line
-                cor_values_lagging = temp_key_df.close.shift(SHIFT).rolling(CORR_PERIOD).corr(cor_df.close)
-                # if abs(cor_values.sum()) > abs(cor_values_lagging).sum():
-                #     print(f'KEY:{key_symbol} CORR:{cor_symbol}')
+                    # Update the shift dict
+                    if abs(cor_values).mean() > MIN_CORR:
+                        if abs(cor_values).sum() > shift_val['best_sum']:
+                            shift_val['data'] = round(cor_values, 3)
+                            shift_val['best_sum'] = abs(cor_values).sum()
+                            shift_val['shift'] = shift
 
                 # Get list of rows where correlation is above threshold
-                cor_rows = cor_values[cor_values > abs(MIN_CORR)].index.tolist()
-                # if len(cor_rows) > 0:
-                    # print(f'cor count for {cor_symbol}:',len(cor_rows))
-
-                _append_result_to_final_df(cor_rows, temp_key_df, cor_df, cor_values, key_symbol, cor_symbol, final_df)
+                cor_rows = shift_val['data'][shift_val['data'] > abs(MIN_CORR)].index.tolist()
+                if len(cor_rows) > 0:
+                    print(f'best val for {cor_symbol} is shift', {shift_val['shift']})
+                    print(f'cor count for {cor_symbol}:',len(cor_rows))
+                
+                _append_result_to_final_df(cor_rows, temp_key_df, cor_df, shift_val['data'], key_symbol, cor_symbol, shift_val['shift'], final_df)
                 
             # Once all the symbols and spreads have been analyzed, save the data
-            # before continuing on to the next FX major symbol
+            # before continuing on to the next FX major
             print(f'{key_symbol} final df length:', len(final_df))
+            print('shift:', shift_val['shift'] )
             if len (final_df) > 2:
                 final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
             
