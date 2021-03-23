@@ -5,9 +5,9 @@ from datetime import datetime
 import time
 import pathlib
 import sqlite3
+import mplfinance as mpf
 from symbols_lists import mt5_symbols, fin_symbols, spreads
 from ohlc_request import mt5_ohlc_request
-import mplfinance as mpf
 from create_db import ohlc_db, correlation_db
 from tokens import mt5_login, mt5_pass
 
@@ -99,15 +99,13 @@ def _make_spread(spread):
 
     return spread_df
 
-def _append_result_to_final_df(cor_rows, temp_key_df, cor_df, cor_values, key_symbol, cor_symbol, shift, final_df):
+def _append_result_to_final_df(cor_rows, gaps, cor_df, cor_values, key_symbol, cor_symbol, shift, final_df):
     ''' Save close prices and corr value for any correlated pair found before continuing to the next symbol. '''
+    
     for i in cor_rows:
-        if not i in temp_key_df.index:
-            print(i, 'not in key_df index')
-            continue
-        final_df.loc[i, f'*{key_symbol}*'] = temp_key_df.loc[i, 'close']
-        final_df.loc[i, f'{cor_symbol}'] = cor_df.loc[i, 'close']
-        final_df.loc[i, f'{cor_symbol}_corr'] = round(cor_values.loc[i], 3)
+        final_df.loc[i, f'*{key_symbol}*'] = gaps.loc[i, 'close']
+        final_df.loc[i, f'{cor_symbol}'] = gaps.loc[i, 'close']
+        final_df.loc[i, f'{cor_symbol}_corr'] = round(gaps.loc[i, 'cor'], 3)
         final_df.loc[i, f'{cor_symbol}_shift'] = shift
 
 def find_correlations():
@@ -148,9 +146,11 @@ def find_correlations():
                 elif cor_symbol in mt5_symbols['others']:
                     cor_df = _get_data(cor_symbol)
 
-                # Ensure matching df lengths
+                # Ensure matching df lengths (drop the overnight gaps if there are any)
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
                 cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
+
+
                 if len(temp_key_df) != len(cor_df):
                     print('mismatched lengths:')
                     print(key_symbol, cor_symbol)
@@ -173,19 +173,31 @@ def find_correlations():
                             shift_val['data'] = round(cor_values, 3)
                             shift_val['best_sum'] = abs(cor_values).sum()
                             shift_val['shift'] = shift
+                            #print(len(shift_val['data']), key_symbol)
+                print(shift_val['data'])
+                
+                # To eliminate choppiness of the value line I plot later, I want to bring
+                # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
+                if len(shift_val['data']) == 0:
+                    continue
+                gaps = key_df.copy()
+                gaps['cor'] = shift_val['data']
+                gaps.close = cor_df.close
+                gaps = gaps.fillna(method='ffill')
+                gaps = gaps.dropna()
+                gaps = _normalize(gaps)
 
                 # Get list of rows where correlation is above threshold
-                cor_rows = shift_val['data'][shift_val['data'] > abs(MIN_CORR)].index.tolist()
+                cor_rows = gaps.cor[abs(gaps.cor) > MIN_CORR * 0.75].index.tolist()
                 if len(cor_rows) > 0:
-                    print(f'best val for {cor_symbol} is shift', {shift_val['shift']})
+                    print(f'best val for {cor_symbol} is shift', shift_val['shift'])
                     print(f'cor count for {cor_symbol}:',len(cor_rows))
                 
-                _append_result_to_final_df(cor_rows, temp_key_df, cor_df, shift_val['data'], key_symbol, cor_symbol, shift_val['shift'], final_df)
+                    _append_result_to_final_df(cor_rows, gaps, cor_df, shift_val['data'], key_symbol, cor_symbol, shift_val['shift'], final_df)
                 
             # Once all the symbols and spreads have been analyzed, save the data
             # before continuing on to the next FX major
             print(f'{key_symbol} final df length:', len(final_df))
-            print('shift:', shift_val['shift'] )
             if len (final_df) > 2:
                 final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
             
