@@ -214,7 +214,9 @@ def find_correlations():
     OHLC_CON.close()
     CORR_CON.close()
 
-print('\ntime started:', datetime.now())
-s = time.time()
-find_correlations()
-print('minutes elapsed:', (time.time() - s)/60)
+if __name__ == '__main__':
+    
+    print('\ntime started:', datetime.now())
+    s = time.time()
+    find_correlations()
+    print('minutes elapsed:', (time.time() - s)/60)
