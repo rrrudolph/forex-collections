@@ -9,11 +9,11 @@ mt5_symbols = {
         'NZDCHF', 'NZDJPY', 'NZDUSD',
     ],
     'others': [
-    'USDSGD', 'EURPLN', 
-    'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
-    'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
-    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
-    'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
+    # 'USDSGD', 'EURPLN', 
+    # 'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
+    # 'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
+    # 'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
+    # 'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
     'XNGUSD', 'XTIUSD', 'XBRUSD', 
     'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
     'DE30', 'UK100', 'US30', 'US500', 'USTEC',
@@ -74,11 +74,16 @@ spreads = [
     'VYM.NYSE_TLT.NAS',
     'DBA.NYSE_MOO.NYSE',
     'BAC.NYSE_CBRE.NYSE',
+    'BAC.NYSE_XLU.NYSE',
     'XLE.NYSE_XLI.NYSE',
     'XOP.NYSE_LQD.NYSE',
     'EEM.NYSE_TLT.NAS',
+    'IEMG.NYSE_TLT.NAS',
+    'AAL.NYSE_ODFL.NAS',
     'MOO.NYSE_MOO.NYSE',
     'XLP.NYSE_XOP.NYSE',
+    'GDX.NYSE_SIL.NYSE',
+    'COF.NYSE_AVB.NYSE',
 ]
 
     
