@@ -42,11 +42,11 @@ settings = {
         'CORR_PERIOD': 1440,  # 5 days
         'MIN_CORR': 0.60,
     },
-    'HTF': {
-        'NUM_CANDLES': HIST_CANDLES,
-        'CORR_PERIOD': 5760,  # 20 days
-        'MIN_CORR': 0.60 ,
-    },
+    # 'HTF': {
+    #     'NUM_CANDLES': HIST_CANDLES,
+    #     'CORR_PERIOD': 5760,  # 20 days
+    #     'MIN_CORR': 0.60 ,
+    # },
 }
 shift_periods = [0, 10, 50, 150, 300, 500, 700]
 
@@ -155,10 +155,6 @@ def find_correlations():
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
                 cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
 
-
-                if len(temp_key_df) != len(cor_df):
-                    print('mismatched lengths:')
-                    print(key_symbol, cor_symbol)
                 temp_key_df = _normalize(temp_key_df, 'close')
                 cor_df = _normalize(cor_df, 'close')
 
@@ -187,15 +183,14 @@ def find_correlations():
                 # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
                 overnight = key_df.copy()
                 overnight['cor'] = shift_val['data']
-                overnight['cor_close'] = cor_df.close
+                overnight['cor_close'] = cor_df.close.shift(shift_val['shift'])
                 overnight = overnight.fillna(method='ffill')
-                overnight = overnight.dropna()
+                overnight = overnight.dropna() # if it was shifted, it will the shift value worth of nans
 
                 # I'll keep the normalized close values of the key and cor symbols so that 
                 # later on I can scan the symbols which have the highest cor with the value line
                 overnight = _normalize(overnight, 'close')
                 overnight = _normalize(overnight, 'cor_close')
-
 
                 # Get list of rows where correlation is above threshold
                 cor_rows = overnight.cor[abs(overnight.cor) > MIN_CORR * 0.75].index.tolist()
@@ -205,6 +200,8 @@ def find_correlations():
                 
                     _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift_val['shift'], final_df)
                 
+                # print(final_df)
+                # quit()
             # Once all the symbols and spreads have been analyzed, save the data
             # before continuing on to the next FX major
             print(f'{key_symbol} final df length:', len(final_df))
@@ -215,7 +212,7 @@ def find_correlations():
     CORR_CON.close()
 
 if __name__ == '__main__':
-    
+
     print('\ntime started:', datetime.now())
     s = time.time()
     find_correlations()
