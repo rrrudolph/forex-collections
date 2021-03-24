@@ -16,11 +16,19 @@ I want to have multi TF correlation values but I can't use HTFs like D1
 when Im filling a historical db. If I did I'd end up with choppy value
 lines since I'd only get a single D1 value per day.  So to emulate real historical 
 data Im going to use M5 candles but multiply all applicable values (correlation period,
-look backs).  I'll also need to drop the correlation threshold for the longer periods.
+look backs).  
+
+The symbols I scan for correlation have various market open hours.  In order to normalize 
+the correlation values between markets that have different hours than the FX pairs, I first
+scan for corr using only the rows where each market is open.  However, ultimately I want to
+use all the corr that's found in order to plot a single "value" line overlayed on a FX major
+ohlc chart.  To have data consistently disappear in the overnight session leads to a lot of
+choppiness in that line.  So after the correlation values are found, I reindex the corr data
+to add in the overnight session and I just do a 'ffill' on the nans. 
 '''
 
 # How much historical data you want 
-HIST_CANDLES = 11520  # 40 days
+HIST_CANDLES = 18040  # ___ days
 
 # Settings for each time horizon 
 settings = {
@@ -33,18 +41,12 @@ settings = {
         'NUM_CANDLES': HIST_CANDLES,
         'CORR_PERIOD': 1440,  # 5 days
         'MIN_CORR': 0.60,
-        'SHIFT': 30,
     },
     'HTF': {
         'NUM_CANDLES': HIST_CANDLES,
         'CORR_PERIOD': 5760,  # 20 days
         'MIN_CORR': 0.60 ,
-        'SHIFT': 300,
     },
-# '4': {
-#     CORR_PERIOD: 4608,  # 16 days
-#     MIN_CORR: abs(0.5),
-#     },
 }
 shift_periods = [0, 10, 50, 150, 300, 500, 700]
 
@@ -71,9 +73,10 @@ def _get_data(symbol):
 
     return df
 
-def _normalize(df):
+def _normalize(df, col):
+    ''' normalize the specified column within a dataframe '''
 
-    df.close = (df.close - min(df.close)) / (max(df.close) - min(df.close))
+    df[f'{col}'] = (df[f'{col}'] - min(df[f'{col}'])) / (max(df[f'{col}']) - min(df[f'{col}']))
 
     return df
 
@@ -87,10 +90,13 @@ def _make_spread(spread):
     # first parse spread
     symbol_1 = spread.split('_')[0]
     symbol_2 = spread.split('_')[1]
-    
-    symbol_1 = mt5_ohlc_request(symbol_1, mt5.TIMEFRAME_M1, num_candles=HIST_CANDLES)
-    symbol_2 = mt5_ohlc_request(symbol_2, mt5.TIMEFRAME_M1, num_candles=HIST_CANDLES)
 
+    try: 
+        symbol_1 = mt5_ohlc_request(symbol_1, mt5.TIMEFRAME_M5, num_candles=HIST_CANDLES)
+        symbol_2 = mt5_ohlc_request(symbol_2, mt5.TIMEFRAME_M5, num_candles=HIST_CANDLES)
+    except:
+        print(f'failed to get data for {symbol_1} or {symbol_2}')
+        quit()
     # normalize both close columns
     symbol_1.close = (symbol_1.close - min(symbol_1.close)) / (max(symbol_1.close) - min(symbol_1.close))
     symbol_2.close = (symbol_2.close - min(symbol_2.close)) / (max(symbol_2.close) - min(symbol_2.close))
@@ -99,13 +105,13 @@ def _make_spread(spread):
 
     return spread_df
 
-def _append_result_to_final_df(cor_rows, gaps, cor_df, cor_values, key_symbol, cor_symbol, shift, final_df):
+def _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift, final_df):
     ''' Save close prices and corr value for any correlated pair found before continuing to the next symbol. '''
     
     for i in cor_rows:
-        final_df.loc[i, f'*{key_symbol}*'] = gaps.loc[i, 'close']
-        final_df.loc[i, f'{cor_symbol}'] = gaps.loc[i, 'close']
-        final_df.loc[i, f'{cor_symbol}_corr'] = round(gaps.loc[i, 'cor'], 3)
+        final_df.loc[i, f'*{key_symbol}*'] = overnight.loc[i, 'close']
+        final_df.loc[i, f'{cor_symbol}'] = overnight.loc[i, 'cor_close']
+        final_df.loc[i, f'{cor_symbol}_corr'] = round(overnight.loc[i, 'cor'], 3)
         final_df.loc[i, f'{cor_symbol}_shift'] = shift
 
 def find_correlations():
@@ -125,7 +131,6 @@ def find_correlations():
     for tf in settings:
         CORR_PERIOD = settings[tf]['CORR_PERIOD']
         MIN_CORR = settings[tf]['MIN_CORR']
-        SHIFT = settings[tf]['SHIFT']
 
         length = len(mt5_symbols['majors']) + 1
         # Iter the fx majors
@@ -146,7 +151,7 @@ def find_correlations():
                 elif cor_symbol in mt5_symbols['others']:
                     cor_df = _get_data(cor_symbol)
 
-                # Ensure matching df lengths (drop the overnight gaps if there are any)
+                # Ensure matching df lengths (drop the overnight overnight if there are any)
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
                 cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
 
@@ -154,8 +159,8 @@ def find_correlations():
                 if len(temp_key_df) != len(cor_df):
                     print('mismatched lengths:')
                     print(key_symbol, cor_symbol)
-                temp_key_df = _normalize(temp_key_df)
-                cor_df = _normalize(cor_df)
+                temp_key_df = _normalize(temp_key_df, 'close')
+                cor_df = _normalize(cor_df, 'close')
 
                 # Iter various shifts to find highest cor and save the data to this dict
                 shift_val = {
@@ -173,27 +178,32 @@ def find_correlations():
                             shift_val['data'] = round(cor_values, 3)
                             shift_val['best_sum'] = abs(cor_values).sum()
                             shift_val['shift'] = shift
-                            #print(len(shift_val['data']), key_symbol)
-                print(shift_val['data'])
                 
-                # To eliminate choppiness of the value line I plot later, I want to bring
-                # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
+                # If nothing is found jump to the next symbol
                 if len(shift_val['data']) == 0:
                     continue
-                gaps = key_df.copy()
-                gaps['cor'] = shift_val['data']
-                gaps.close = cor_df.close
-                gaps = gaps.fillna(method='ffill')
-                gaps = gaps.dropna()
-                gaps = _normalize(gaps)
+
+                # To eliminate choppiness of the value line I plot later, I want to bring
+                # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
+                overnight = key_df.copy()
+                overnight['cor'] = shift_val['data']
+                overnight['cor_close'] = cor_df.close
+                overnight = overnight.fillna(method='ffill')
+                overnight = overnight.dropna()
+
+                # I'll keep the normalized close values of the key and cor symbols so that 
+                # later on I can scan the symbols which have the highest cor with the value line
+                overnight = _normalize(overnight, 'close')
+                overnight = _normalize(overnight, 'cor_close')
+
 
                 # Get list of rows where correlation is above threshold
-                cor_rows = gaps.cor[abs(gaps.cor) > MIN_CORR * 0.75].index.tolist()
+                cor_rows = overnight.cor[abs(overnight.cor) > MIN_CORR * 0.75].index.tolist()
                 if len(cor_rows) > 0:
                     print(f'best val for {cor_symbol} is shift', shift_val['shift'])
                     print(f'cor count for {cor_symbol}:',len(cor_rows))
                 
-                    _append_result_to_final_df(cor_rows, gaps, cor_df, shift_val['data'], key_symbol, cor_symbol, shift_val['shift'], final_df)
+                    _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift_val['shift'], final_df)
                 
             # Once all the symbols and spreads have been analyzed, save the data
             # before continuing on to the next FX major
