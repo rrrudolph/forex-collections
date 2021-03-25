@@ -213,9 +213,11 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60, 
 
     #     print('number of voltick signals:', len(df[df.voltick.notna()]))
 
-    # Resample into 1 min
+    # Resample into some other timeframe
     for ccy in indexes:
-        indexes[ccy] = _resample(indexes[ccy], final_period)
+
+        if final_period != '1s':
+            indexes[ccy] = _resample(indexes[ccy], final_period)
     
         indexes[ccy] = _final_ohlc_cleaning(indexes[ccy], ccy)
 
@@ -249,9 +251,21 @@ def save_index_data_for_mt5(indexes):
         
         df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=False)
 
+def _read_last_timestamp(tablename, conn):
+    ''' Open a db table and get the last timestamp that exists.
+    Used to db updates '''
+
+    df = pd.read_sql(f'''SELECT datetime from {tablename}
+                        ORDER BY datetime DESC
+                        LIMIT 1''', conn)
+    df.datetime = pd.to_datetime(df.datetime)
+    timestamp = df.values[0]
+
+    return timestamp
+    
+
 def continuous_db_update():
-    ''' Append new data to the db.  In order to get semi smooth price transistions
-    I'll still need to request a few days at a time for normalization '''
+    ''' Request ticks, resample into 1 second bars and save to the database '''
     
     ccys = [
         'USD',
@@ -267,15 +281,20 @@ def continuous_db_update():
     timestamps = []
     for ccy in ccys:
 
-        # Read last timestamp from each ccy and use as the start date for data request
-        df = pd.read_sql(f'''SELECT datetime from {ccy}
-                            ORDER BY datetime DESC
-                            LIMIT 1''', OHLC_CON)
-        df.datetime = pd.to_datetime(df.datetime)
-        timestamps.append(df.values[0])
+        try:
 
-    first = min(timestamps)[0]
-    indexes = make_ccy_indexes(mt5_symbols['majors'], _from=first)
+            timestamp = _read_last_timestamp(ccy, OHLC_CON)
+            timestamps.append(timestamp)
+
+            # Get the timestamp value
+            first = min(timestamps)[0]
+
+        # If this is the first request start with 60 days
+        except:
+            first = datetime.now() - pd.Timedelta('60 days')
+
+    # Request ticks between 'first' and now
+    indexes = make_ccy_indexes(mt5_symbols['majors'], _from=first, final_period='1s')
 
     # Only append new data
     for last_timestamp, ccy in zip(timestamps, indexes):
@@ -287,7 +306,7 @@ def continuous_db_update():
 # 60 days takes 8.5 mins
 if __name__ == '__main__':
 
-    # indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='1 min', days=60)
+    # indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='60 min', days=15)
     while True:
         
         if _market_open:
@@ -295,26 +314,28 @@ if __name__ == '__main__':
             second = datetime.now().second
             if second == 0:
 
-                continuous_db_update()
+                continuous_db_update()  # 3 days takes 30 seconds to update
 
 
-    # eur = indexes['EUR']
-    # usd = indexes['USD']
-    # gbp = indexes['GBP']
-    # cad = indexes['CAD']
-    # jpy = indexes['JPY']
-    # aud = indexes['AUD']
-    # nzd = indexes['NZD']
+    usd = indexes['USD']
+    eur = indexes['EUR']
+    gbp = indexes['GBP']
+    cad = indexes['CAD']
+    jpy = indexes['JPY']
+    aud = indexes['AUD']
+    nzd = indexes['NZD']
+    chf = indexes['CHF']
     
     import mplfinance as mpf
 
-    # mpf.plot(eur,type='candle',show_nontrading=False, volume=True, title='eur')
-    # mpf.plot(usd,type='candle',show_nontrading=False, volume=True, title='usd')
-    # mpf.plot(gbp,type='candle',show_nontrading=False, volume=True, title='gbp')
-    # mpf.plot(cad,type='candle',show_nontrading=False, volume=True, title='cad')
-    # mpf.plot(jpy,type='candle',show_nontrading=False, volume=True, title='jpy')
-    # mpf.plot(aud,type='candle',show_nontrading=False, volume=True, title='aud')
-    # mpf.plot(nzd,type='candle',show_nontrading=False, volume=True, title='nzd')
+    mpf.plot(usd,type='candle',show_nontrading=False, volume=True, title='usd')
+    mpf.plot(eur,type='candle',show_nontrading=False, volume=True, title='eur')
+    mpf.plot(gbp,type='candle',show_nontrading=False, volume=True, title='gbp')
+    mpf.plot(cad,type='candle',show_nontrading=False, volume=True, title='cad')
+    mpf.plot(jpy,type='candle',show_nontrading=False, volume=True, title='jpy')
+    mpf.plot(aud,type='candle',show_nontrading=False, volume=True, title='aud')
+    mpf.plot(nzd,type='candle',show_nontrading=False, volume=True, title='nzd')
+    mpf.plot(chf,type='candle',show_nontrading=False, volume=True, title='chf')
     
 
     # df = df.reset_index()  # otherwise plot weekend gaps
