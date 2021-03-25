@@ -1,8 +1,10 @@
 import pandas as pd
 import sqlite3
+import pathlib
 from datetime import datetime
 import time
 from create_db import value_db, correlation_db
+from correlations import _normalize
 from symbols_lists import mt5_symbols
 
 
@@ -70,7 +72,7 @@ def set_pair_value():
             try:
                 cor_df = pd.read_sql(f'SELECT * FROM {name}', CORR_CON)
             except:
-                print(f'couldnt open {name}')
+                print(f"Couldn't open {name}")
                 continue
             
             if len(cor_df) < 10:
@@ -84,33 +86,35 @@ def set_pair_value():
             things_to_omit = [r'*', 'corr', 'index', 'shift']
             cols = cor_df.columns.tolist()
 
-            new_cols = []
+            parsed_cols = []
             for col in cols:
                 if all(x not in col for x in things_to_omit):
-                    new_cols.append(col)
+                    parsed_cols.append(col)
             
-            # Multiply the diff values by the current correlation score
+            # Multiply the symbol values by the current correlation score
             temp_df = pd.DataFrame()
-            for col in new_cols:
-                temp_df[f'{col}'] = cor_df[f'{col}'] * cor_df[f'{col}_corr']
+            for col in parsed_cols:
+                temp_df[col] = cor_df[col] * cor_df[f'{col}_corr']
             
-            # Now I have df of just the symbol names but tons of nans. Before I deal with those
-            # I want to save the number of non nan symbols in each row so I can get an average at the end
+            # Now I have df of just the symbol values but tons of nans. Before I deal with those
+            # I want to save the number of non nan symbols in each row so I can get an average value
             non_nans = temp_df.notna().sum(axis=1)
 
             temp_df = temp_df.fillna(0)
             cor_sum = temp_df.sum(axis=1)
 
+            # Average by the count of non nans
             cor_sum /= non_nans
 
-            # This is what will be saved to the db
-            # (I used to subtract the key_symbol values from cor_sum but I didn't end
-            # up liking the oscillator type look)
+            # Save the normalized values of the pairs close prices and the derived value
+            df[pair] = cor_df[f'*{pair}*']
             df[f'{tf[1:]}'] = round(cor_sum, 4)
+
+            df = _normalize(df, pair)
+            df = _normalize(df, tf[1:])
             
             df.to_sql(name, VAL_CON, if_exists='replace', index=True)
 
-    CORR_CON.close()
 
 def set_index_value():
     ''' Using the data that was calculated in the pair function, combine
@@ -183,8 +187,41 @@ def set_index_value():
             name = ccy + tf
             indexes[ccy].to_sql(name, VAL_CON, if_exists='replace', index=True)
             
-    VAL_CON.close()
     
+def value_corr_scanner():
+    ''' Iter over each symbol and save the correlation of its value line against price.
+    Then I can sort by the best ratings to find which charts are probably nicest to trade '''
 
-set_pair_value()
-set_index_value()
+    # This will save the symbol names and their value line's correlation score
+    values = pd.Series(dtype=object)
+
+    for tf in timeframes:
+        for pair in mt5_symbols['majors']:
+            
+            name = pair + tf
+            
+            try:
+                df = pd.read_sql(f'SELECT * FROM {name}', VAL_CON)
+            except:
+                print(f"Couldn't open {name}")
+                continue
+
+            # Get correlation value
+            corr_value = df[pair].corr(df[tf[1:]])
+
+            # Save the data
+            values[name] = corr_value
+    
+    values = values.sort_values(ascending=False)
+
+    p = r'C:\Users\ru'
+    values.to_csv(pathlib.Path(p, 'corr-scores.csv'))
+
+
+
+
+# set_pair_value()
+# set_index_value()
+value_corr_scanner()
+CORR_CON.close()
+VAL_CON.close()
