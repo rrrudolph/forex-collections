@@ -8,15 +8,25 @@ mt5_symbols = {
         'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
         'NZDCHF', 'NZDJPY', 'NZDUSD',
     ],
+
     'others': [
     # 'USDSGD', 'EURPLN', 
     # 'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
     # 'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
     # 'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
     # 'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
-    'XNGUSD', 'XTIUSD', 'XBRUSD', 
-    'XAGUSD', 'XAUUSD', 'XPDUSD', 'XPTUSD', 
-    'DE30', 'UK100', 'US30', 'US500', 'USTEC',
+    'XNGUSD', 
+    'XTIUSD', 
+    'XBRUSD', 
+    'XAGUSD', 
+    'XAUUSD', 
+    'XPDUSD', 
+    'XPTUSD', 
+    'DE30', 
+    'UK100', 
+    'US30', 
+    'US500', 
+    'USTEC',
     'MOO.NYSE', 
     'XLF.NYSE', 
     'XLU.NYSE', 
@@ -30,9 +40,16 @@ mt5_symbols = {
     'DBA.NYSE', # AGRICULTURE
     'EEM.NYSE', # EMERGING MARKETS
     'IEMG.NYSE', # EMERGING MARKETS
-    'BAC.NYSE',
-    'CBRE.NYSE', # REAL ESTATE
-
+    'BAC.NYSE', #FINANCIAL
+    'COF.NYSE', #  
+    'CBRE.NYSE', # REALTY
+    'AVB.NYSE', # 
+    'AAL.NAS', # 
+    'ODFL.NAS', # 
+    'SIL.NYSE', # 
+    'GDX.NYSE', # 
+    'SHCW.NYSE', # FINANCIAL
+    'ESS.NYSE', # REALTY
     ]
 }
 
@@ -53,6 +70,8 @@ fin_symbols = [
 ]
 
 spreads = [
+    # sometimes making spreads will error. I've fixed that by first 
+    # requesting the data from the indiviudual symbols (put them in 'others')
     'XTIUSD_XAUUSD',
     'XTIUSD_XAGUSD',
     'XTIUSD_XBRUSD',
@@ -82,6 +101,7 @@ spreads = [
     'AAL.NAS_ODFL.NAS',
     'XLP.NYSE_XOP.NYSE',
     'GDX.NYSE_SIL.NYSE',
+    'SCHW.NYSE_ESS.NYSE',
     'COF.NYSE_AVB.NYSE',
 ]
 
