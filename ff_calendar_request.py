@@ -10,7 +10,7 @@ from create_db import econ_db  # local path to the database
 from tokens import ff_cal_sheet, forecast_sheet, bot
 
 
-econ_con = sqlite3.connect(econ_db)
+ECON_CON = sqlite3.connect(econ_db)
 
 # month = 0
 # year = 0
@@ -75,17 +75,15 @@ def update_gsheet_cell(*args, historical_fill=False, sheet=ff_cal_sheet):
 
     return df
 
-
-def run_regex(df):
+def _run_regex(df):
     ''' Remove the non-numeric values '''
 
-    reg = r'([<>KMBT%])'
+    reg = r'([<>KkMmBbTt%])'
     df.actual = df.actual.replace(reg,'',regex=True)
     df.forecast = df.forecast.replace(reg,'',regex=True)
     df.previous = df.previous.replace(reg,'',regex=True)
 
     return df
-
 
 def _set_dtypes(df):
 
@@ -98,8 +96,7 @@ def _set_dtypes(df):
 
     return df
 
-
-def clean_data(df, year, remove_non_numeric=True):
+def _clean_data(df, year, remove_non_numeric=True):
 
     # Clean data cuz it's really quite bad
     df = df.rename(columns = {
@@ -146,10 +143,9 @@ def clean_data(df, year, remove_non_numeric=True):
 
     # Remove all the non-numeric values
     if remove_non_numeric == True:
-        df = run_regex(df)
+        df = _run_regex(df)
 
     return df
-
 
 def build_historical_db(year_start=2012):
     ''' Get historical data from 2012 through the last completed month. 
@@ -176,14 +172,67 @@ def build_historical_db(year_start=2012):
 
             # Request data
             df = update_gsheet_cell(month, year, historical_fill=True)
-            df = clean_data(df, year, remove_non_numeric=False)
+            df = _clean_data(df, year, remove_non_numeric=False)
 
             # Update database
-            df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
+            df.to_sql('ff_cal_raw', ECON_CON, if_exists='append', index=False)
 
-    econ_con.close()  # :/
-         
+    ECON_CON.close()  # :/
 
+def _set_accuracy(df, temp, normd_actual, normd_forecast):
+    ''' Set the forecast accuracy for a given event '''
+
+    accuracy = (normd_forecast - normd_actual).rolling(6).mean()
+    df.loc[temp.index, 'accuracy'] = round(accuracy, 3)
+
+    return df         
+
+def _set_event_trend(df, normd_actual, unique_event):
+    ''' Set the rolling trend of the data for a given event '''
+
+    temp = df[(df.ccy_event == unique_event)
+              &
+              (df.actual.notna())
+             ]
+
+    # Get the recent trend of the actuals (normalized)
+    trend = normd_actual.diff().rolling(6).mean()
+    df.loc[temp.index, 'trend'] = round(trend, 3)
+
+    return df
+
+def _set_ccy_trend(df, unique_ccy):
+    ''' Called within 'calculate_raw_db to set each currency's ccy_trend value '''
+
+    # Refilter the df to calculate the trend of the ccy overall
+    temp = df[(df.ccy == unique_ccy) 
+                &
+                (df.trend.notna())
+                ]
+
+    # Get the recent trend of the actuals (overall by currency)
+    ccy_trend = temp.trend.rolling(7).mean()
+    df.loc[temp.index, 'ccy_trend'] = round(ccy_trend, 3)
+
+    return df
+
+def _set_importance_weight(df, unique_event, temp):
+    ''' Set weights (certain forecast events are more important than others) '''
+
+    # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
+    weight = 1
+    for event in forecast_weights:     
+        if event in unique_event:
+            weight = forecast_weights[event]
+        
+    for event in inverted_weights:     
+        if event in unique_event:
+            weight *= -1    
+
+    # Set the value
+    df.loc[df.ccy_event == unique_event, 'weight'] = weight
+
+    return df
 
 def calculate_raw_db():
     ''' Add accuracy, trend, and weight columns to the raw db,
@@ -191,21 +240,17 @@ def calculate_raw_db():
     when new data is added, and only needs to look at the previous 7 months. '''
 
     # Open file and prepare for calculations
-    df = pd.read_sql('SELECT * FROM ff_cal_raw', econ_con)
+    df = pd.read_sql('SELECT * FROM ff_cal_raw', ECON_CON)
 
     # In case duplicates were made at some point delete them and re-save
     df = df.drop_duplicates(subset=['datetime', 'ccy_event'])
-    df.to_sql("ff_cal_raw", econ_con, if_exists='replace', index=False)
+    df.to_sql("ff_cal_raw", ECON_CON, if_exists='replace', index=False)
 
-    # Now continue on
-    df = run_regex(df)
+    df = _run_regex(df)
     df = _set_dtypes(df)
 
-
-    # Find unique events 
-    unique_events = df.ccy_event.unique()
-
     # Run some calculations on each unique event
+    unique_events = df.ccy_event.unique()
     for unique_event in unique_events:
 
         # Filter for just that event
@@ -214,56 +259,33 @@ def calculate_raw_db():
                   (df.forecast.notna())
                   &
                   (df.actual.notna())
-                  ]
+                 ]
+
+        if len(temp) < 2:
+            continue
+
+        # Get the recent accuracy of the forecast (a positive number means forecast missed above)
+        normd_actual = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+        normd_forecast = (temp.forecast - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
+
+        df = _set_accuracy(df, temp, normd_actual, normd_forecast)
+        df = _set_event_trend(df, normd_actual, unique_event)
+        df = _set_importance_weight(df, unique_event, temp)
 
 
-        if len(temp) > 2:
+    # Set the rolling ccy trend
+    unique_ccys = df.ccy.unique()
+    for unique_ccy in unique_ccys:
 
-            # Get the recent accuracy of the forecast (a positive number means forecast missed above)
-            normd_actual = (temp.actual - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
-            normd_forecast = (temp.forecast - min(temp.actual)) / (max(temp.actual) - min(temp.actual))
-            accuracy = (normd_forecast - normd_actual).rolling(6).mean()
-            df.loc[temp.index, 'accuracy'] = round(accuracy, 3)
+        df = _set_ccy_trend(df, unique_ccy)
 
-        # Refilter the df to calculate the trend of actuals
-        temp = df[(df.ccy_event == unique_event)
-                  &
-                  (df.actual.notna())
-                  ]
-
-        # Get the recent trend of the actuals (normalized)
-        trend = normd_actual.diff().rolling(4).mean()
-        df.loc[temp.index, 'trend'] = round(trend, 3)
-        
-        # Apply weights (certain forecast events are more important than others)
-        # randnote: if an event is 'Final...PMI', it will assign a weight of 0.5
-        weight = 1
-        for event in forecast_weights:     
-            if event in unique_event:
-                weight = forecast_weights[event]
-            
-        for event in inverted_weights:     
-            if event in unique_event:
-                weight *= -1    
-       
-        df.loc[temp.index, 'weight'] = weight
-
-        # Refilter the df to calculate the trend of the ccy overall
-        ccy = temp.ccy.values[0]
-        ccy_trend = df.trend[(df.ccy == ccy)
-                            &
-                            (df.trend.notna())
-                            ]
-
-        # Get the recent trend of the actuals (overall by currency)
-        ccy_trend = ccy_trend.rolling(7).mean()
-        df.loc[temp.index, 'ccy_trend'] = round(ccy_trend, 3)
-
+    # Create a col for the final outlook, used for filtering for updates
+    df['outlook'] = np.nan
 
     # Overwrite current database file
-    df.to_sql("ff_cal", econ_con, if_exists='replace', index=False)
+    df.to_sql("ff_cal", ECON_CON, if_exists='replace', index=False)
 
-def weekly_ff_cal_request():
+def current_week_cal_request():
     ''' Get the current week's data. If today is Saturday append
     that data to the raw database and sleep for 24hrs. '''  
 
@@ -272,110 +294,72 @@ def weekly_ff_cal_request():
     month = datetime.today().month
     df = update_gsheet_cell(month, year)
 
-    # If today is Saturday, save the data and sleep the program for 24hrs
+    # If today is Saturday, save the data and sleep the program for 24hrs+
     # Monday is 0, Sunday is 6
-    year = datetime.today().year
     weekday = datetime.today().weekday()
+    year = datetime.today().year
     if weekday == 5:
 
-        df = clean_data(df, year, remove_non_numeric=False)
-        df.to_sql('ff_cal_raw', econ_con, if_exists='append', index=False)
+        df = _clean_data(df, year, remove_non_numeric=False)
+        df.to_sql('ff_cal_raw', ECON_CON, if_exists='append', index=False)
+        df = pd.read_sql('SELECT * FROM ff_cal_raw', ECON_CON)
+        df = df.drop_duplicates()
+        df.to_sql('ff_cal_raw', ECON_CON, if_exists='replace', index=False)
+        
         calculate_raw_db()
-        time.sleep(60*1440)
+        time.sleep(60*2040)
 
     # Otherwise just a regular operation
     else:
-        df = clean_data(df, year)
+        df = _clean_data(df, year)
 
     return df
 
+def _evaluate_trend_scores(temp, forecast_rating, combined, unique_event):
 
-def rate_weekly_forecasts(start, horizon='48 hour', bot=bot, save_to_db=False):
-    ''' Calculate the current weeks data by normalizing
-    against the database. Returns a dict. '''
-
-    # While my database is still small it makes more sense to
-    # read the whole thing into memory rather than make queries, so...
-    db = pd.read_sql('SELECT * FROM ff_cal', econ_con)
-    db = _set_dtypes(db)
-
-    df = weekly_ff_cal_request()
-    df = _set_dtypes(df)
-    
-    # Filter for events with forecasts which are set to drop within the next 48 hours
-    start = pd.to_datetime(start)
-    end = datetime.now() + pd.Timedelta(horizon) 
-    df = df[
-        (df.forecast.notna()) 
-        & 
-        (df.datetime < end)
-        & 
-        (df.datetime > start)
+    # Get the trend of the actuals
+    trend = combined.trend[(combined.ccy_event == unique_event)
+                            &
+                            (combined.trend.shift(1).notna()) # trend lags by 1 until actual is released
     ]
-    # Combine the df's to normalize and stuff
-    combined = pd.concat([db, df])
 
+    # Multiply forecast rating by trend and accuracy scores                      
+    if len(trend) > 0:
 
-    # Now go through the upcoming events and calculate stuff
-    forecasts_df = pd.DataFrame()
-    for i in df.index:
-        event = df.loc[i, 'ccy_event']
-        ccy = df.loc[i, 'ccy']
-
-        # Ensure the event exists in the database
-        if len(db[db.ccy_event == event]) == 0:
-            message = f'No history exists for {event}.'
-            print('~~~', message, '~~~')
-            bot.send_message(chat_id=446051969, text=message)
-            continue
-
-        # Ensure there are no nans
-        temp = combined[(combined.ccy_event == event)
-                        &
-                        (combined.forecast.notna())
-                        &
-                        (combined.previous.notna())
-                        ]
-
-        if len(temp) < 2:
-            print(f'Less than 2 events found for {event}.')
-        # Normalize forecast and previous 
-        forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
-        previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
-
-        # Get the initial forecast change value
-        forecast_rating = (forecast - previous).values[-1]
-
-        # Get the trend of the actuals
-        trend = db.trend[(db.ccy_event == event)
-                        &
-                        (db.trend.notna())
-                        ].tail(1)
-
-        # For newish events there won't yet be a trend value                        
-        if len(trend) > 0:
-            trend = trend.values[0]                    
-
-            both_positive = forecast_rating > 0 and trend > 0
-            both_negative = forecast_rating < 0 and trend < 0
-            if both_positive or both_negative:
-                forecast_rating *= 1.25
+        both_positive = temp[(forecast_rating > 0)
+                                &
+                                (trend > 0)
+        ]
+        both_negative = temp[(forecast_rating < 0)
+                                &
+                                (trend < 0)
+        ]
+        forecast_rating[both_positive.index] *= 1.25
+        forecast_rating[both_negative.index] *= 1.25
 
         # Check the currency's overall data trend
-        ccy_trend = db.ccy_trend[(db.ccy == ccy)
-                                 &
-                                 (db.ccy_trend.notna())
-                                 ].tail(1).values[0]
+        ccy_trend = combined.ccy_trend[(combined.ccy_event == unique_event)
+                                        &
+                                        (combined.ccy_trend.shift(1).notna()) # lags by 1 until actual is released
+        ]
+        both_positive = temp[(forecast_rating > 0)
+                                &
+                                (ccy_trend > 0)
+        ]
+        both_negative = temp[(forecast_rating < 0)
+                                &
+                                (ccy_trend < 0)
+        ]
+        forecast_rating[both_positive.index] *= 1.25
+        forecast_rating[both_negative.index] *= 1.25
 
-        both_positive = forecast_rating > 0 and ccy_trend > 0
-        both_negative = forecast_rating < 0 and ccy_trend < 0
-        if both_positive or both_negative:
-            forecast_rating *= 1.25
+def _evaluate_accuracy_scores(forecast_rating, combined, unique_event):
 
         # Get the accuracy range
-        accuracies = db.accuracy[(db.ccy_event == event) 
-                                &
-                               (db.accuracy.notna())]
+        accuracies = combined.ccy_trend[(combined.ccy_event == unique_event)
+                                        &
+                                        (combined.accuracy.shift(1).notna()) # lags by 1 until actual is released
+        ]
 
         # For newish events there won't yet be an accuracy value                        
         if len(accuracies) > 0:  
@@ -383,38 +367,80 @@ def rate_weekly_forecasts(start, horizon='48 hour', bot=bot, save_to_db=False):
             # Create some bins (remember, perfect accuracy is 0)
             bins = accuracies.describe()
 
-            accuracy = accuracies.tail(1).values[0]
-            if bins['25%'] < accuracy < bins['75%']:
-                accuracy = 1.5
-            else:
-                accuracy = 0.5
+            good = accuracies[(bins['25%'] < accuracies) 
+                              &
+                              (accuracies < bins['75%'])
+            ]
+            bad = accuracies[(bins['25%'] > accuracies) 
+                             |
+                             (accuracies > bins['75%'])
+            ]
 
-            forecast_rating *= accuracy
+            forecast_rating.loc[good.index] *= 1.25
+            forecast_rating.loc[bad.index] *= 0.75
 
-        # Mltiply the forecast rating by the events weight
-        forecast_rating *= db.weight[db.ccy_event == event].values[0]
+def calculate_outlook(bot=bot, save_to_db=False):
+    ''' Calculate the current weeks data by normalizing
+    against the database. Returns a dict. '''
+
+    # While my database is still small it makes more sense to
+    # read the whole thing into memory rather than make queries, so...
+    db = pd.read_sql('SELECT * FROM ff_cal', ECON_CON)
+    db = _set_dtypes(db)
+
+    df = current_week_cal_request()
+    df = _set_dtypes(df)
+    
+    # Filter for events with forecasts
+    df = df[(df.forecast.notna())]
+
+    combined = pd.concat([db, df])
+    combined = combined.drop_duplicates().reset_index(drop=True)
+    
+    # Run some calculations on each unique event
+    unique_events = combined.ccy_event[combined.outlook.isna()].unique()
+    for unique_event in unique_events:
+
+        # Filter for just that event
+        temp = combined[(combined.ccy_event == unique_event)
+                        &
+                        (combined.forecast.notna())
+                        &
+                        (combined.previous.notna())
+                        ]
+
+        if len(temp) < 2:
+            continue
+
+        # Normalize forecast and previous 
+        forecast = (temp.forecast - min(temp.forecast)) / (max(temp.forecast) - min(temp.forecast))
+        previous = (temp.previous - min(temp.previous)) / (max(temp.previous) - min(temp.previous))
+
+        # Get the initial forecast change value  ~~~~~~~~~~~~~~~~~ C H A N G E D ~~~~~~~~~~~~~~~~~~~~~
+        forecast_rating = forecast - previous
+
+        # Mltiply the forecast ratings by the trend and accuracy scores
+        _evaluate_trend_scores(temp, forecast_rating, combined, unique_event)
+        _evaluate_accuracy_scores(forecast_rating, combined, unique_event)
+    
+        # Mltiply the forecast ratings by the event's weight
+        forecast_rating *= db.weight[db.ccy_event == unique_event].values[0]
 
         # Finally, save that data
-        forecasts_df.loc[i, 'ccy'] = df.loc[i, 'ccy']
-        forecasts_df.loc[i, 'ccy_event'] = df.loc[i, 'ccy_event']
-        forecasts_df.loc[i, 'event_datetime'] = df.loc[i, 'datetime']
-        forecasts_df.loc[i, 'forecast'] = round(forecast_rating, 2)
+        combined.loc[forecast_rating.index, 'outlook'] = round(forecast_rating, 2)
 
-        # And add to the outlook sheet in the databse
-        if save_to_db == True:
-            forecasts_df.to_sql('outlook', econ_con, if_exists='replace', index=False)
+    # Add the outlook cols data back into the same db table
+    combined.to_sql('ff_cal', ECON_CON, if_exists='replace', index=False)
 
 
-    return forecasts_df
-
-
+calculate_outlook()
 def rate_monthly_outlook():
     ''' Calculate the longer term, directional outlook for each currency
     using a few select events.  Returns a dict'''
 
     # Load data and combine
-    db = pd.read_sql('SELECT * FROM ff_cal', econ_con)
-    df = weekly_ff_cal_request()
+    db = pd.read_sql('SELECT * FROM ff_cal', ECON_CON)
+    df = current_week_cal_request()
     df = pd.concat([db, df])
 
     df = _set_dtypes(df)
@@ -505,7 +531,7 @@ def upload_to_gsheets(df, sheet=forecast_sheet):
             sheet.update_cell(num+1, column, f.values[0])
 
       
-def forecast_handler(sheet=forecast_sheet, econ_con=econ_con):
+def forecast_handler(sheet=forecast_sheet, ECON_CON=ECON_CON):
     ''' Both of these return dfs.  Data will be automatically
     added to the database on Saturday through the weekly_request function
     which gets called inside each of these functions. So essentially, everything
@@ -550,7 +576,7 @@ def forecast_handler(sheet=forecast_sheet, econ_con=econ_con):
 
         # this always errors first time and sometimes more
         # if len(combined) > len(historical):
-        #     combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
+        #     combined.to_sql('outlook', ECON_CON, if_exists='replace', index=False)
 
         # Update 
         
@@ -563,7 +589,7 @@ def forecast_handler(sheet=forecast_sheet, econ_con=econ_con):
 
 def verify_db_tables_exist():
     try: 
-        first = pd.read_sql('SELECT * FROM ff_cal_raw LIMIT 1', econ_con)
+        first = pd.read_sql('SELECT * FROM ff_cal_raw LIMIT 1', ECON_CON)
     except:
         print(f"\nCouldn't locate the db table 'ff_cal_raw' at {econ_db}.")
         print('Going to build the historical db. This will take a few mins.')
@@ -573,13 +599,13 @@ def verify_db_tables_exist():
             print(e)
             return None
     try:
-        second = pd.read_sql('SELECT * FROM ff_cal LIMIT 1', econ_con)
+        second = pd.read_sql('SELECT * FROM ff_cal LIMIT 1', ECON_CON)
     except:
         print('\nNow just a few calculations...')
         calculate_raw_db()
 
     try:
-        third = pd.read_sql('SELECT * FROM outlook LIMIT 1', econ_con)
+        third = pd.read_sql('SELECT * FROM outlook LIMIT 1', ECON_CON)
     except:
 
         # This is essentially a simplified forecast_handler() 
@@ -597,16 +623,22 @@ def verify_db_tables_exist():
             combined.loc[index, 'monthly'] = monthly
         
 
-        combined.to_sql('outlook', econ_con, if_exists='replace', index=False)
+        combined.to_sql('outlook', ECON_CON, if_exists='replace', index=False)
         print('Done!')
 
 
 # verify_db_tables_exist()
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    forecast_handler()
+    # forecast_handler()
+    
+    # df = update_gsheet_cell('mar', '2021', historical_fill=True)
+    # df = _clean_data(df, '2021', remove_non_numeric=False)
+
+    # # Update database
+    # df.to_sql('ff_cal_raw', ECON_CON, if_exists='append', index=False)
 
 
 
