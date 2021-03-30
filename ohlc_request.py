@@ -48,28 +48,33 @@ def _market_open():
     # If nothings been returned at this point market is closed
     return False
 
-def _get_latest_datetime(symbol, timeframe):
-    ''' Get the last ohlc datetime for each symbol '''
+def _read_last_datetime(tablename, conn):
+    ''' Get the last datetime for a given table '''
 
-    try:
-        df = pd.read_sql(f"""SELECT * FROM {symbol} 
-                            ORDER BY datetime DESC 
-                            LIMIT 1""", ohlc_con)
-        df.index = pd.to_datetime(df.index)
+    # the tables in CORR_CON list the index as "index" but 
+    # still need to be accessed by being called "datetime" ??
+    
+    df = pd.read_sql(f"""SELECT * FROM {tablename}""", conn)
+    df.datetime = pd.to_datetime(df.datetime)
 
+    return df.datetime.tail(1).values[0]
+
+def _set_request_start_timestamp(timeframe, tablename, conn):
+    ''' Get the last datetime entry in the db, add one period of whatever
+    timeframe is passed, and return a timestamp of that value '''
+
+    last = _read_last_datetime(tablename, conn)
+
+    if last:
+    
         # Add 6 hours to get it back in line with the current GMT and make into timestamp
-        request_start = df.index[0] + pd.Timedelta('6 hours')
+        request_start = last + pd.Timedelta('6 hours')
         request_start = datetime.timestamp(request_start)
 
-        
         # Now move the request 1 bar into the future to not duplicate the last row
         request_start += pd.Timedelta(timeframe)
 
         return request_start
-    
-    # the table might not exist. if its something else it will get caught later
-    except:
-        return None
 
 
 def _set_start_time(symbol, timeframe, num_candles=9999):
@@ -178,11 +183,15 @@ def timeframes_to_request():
 
 def _format_mt5_data(df):
     
-    df = df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
-    df.datetime = pd.to_datetime(df.datetime, unit='s')
-    df.datetime = df.datetime - pd.Timedelta('8 hours')
-    df.index = df.datetime
-    df = df[['open', 'high', 'low', 'close', 'volume']]
+    try:
+        df = df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
+        df.datetime = pd.to_datetime(df.datetime, unit='s')
+        df.datetime = df.datetime - pd.Timedelta('8 hours')
+        df.index = df.datetime
+        df = df[['open', 'high', 'low', 'close', 'volume']]
+    except:
+        print('Failed to format the dataframe:')
+        print(df)
 
     return df
 
@@ -228,7 +237,7 @@ def infinite_request():
         #     tues-thurs           monday after 6am          friday before 3pm
         if (1 <= day <= 3) or (day == 0 and hour >= 6) or (day == 4 and hour <= 3):
 
-            next_candle_time = _get_latest_datetime(fin_symbols[0], '1')
+            next_candle_time = _read_last_datetime(fin_symbols[0], '1')
             
             try:
                 # First time running needs this
@@ -253,6 +262,6 @@ def infinite_request():
 
 if __name__ == '__main__':
 
-    print(mt5_ohlc_request('EURUSD', mt5.TIMEFRAME_M1, num_candles=5))
+    print(mt5_ohlc_request('PKG.NYSE', mt5.TIMEFRAME_M5, num_candles=840))
 
     # infinite_request()
