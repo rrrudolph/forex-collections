@@ -11,7 +11,7 @@ from datetime import datetime
 import concurrent.futures
 from create_db import ohlc_db
 from symbols_lists import fin_symbols, seconds_per_candle
-from tokens import fin_token, mt5_login, mt5_pass
+from tokens import fin_token, mt5_login, mt5_pass, mt5_server
 
 ohlc_con = sqlite3.connect(ohlc_db)
 
@@ -20,7 +20,7 @@ so a couple conversions take place from saving and requesting '''
 
 
 def _market_open():
-    ''' Check if the FX market is currently open. Returns True or False. '''
+    ''' Check if the FX market is currently open. '''
 
     # monday == 0, sunday == 6
     minute = datetime.now().minute
@@ -28,7 +28,7 @@ def _market_open():
     day = datetime.now().weekday()
 
     # Monday thru Thursday
-    if 0 <= day < 4:
+    if 0 <= day <= 4:
         return True
 
     # Friday before 430pm CST
@@ -39,10 +39,10 @@ def _market_open():
         return True
 
     # Sunday after 430pm CST
-    if day == 6 and hour < 4:
+    if day == 6 and hour > 4:
         return True
     
-    elif day == 6 and hour == 4 and minute < 30:
+    elif day == 6 and hour == 4 and minute > 30:
         return True
 
     # If nothings been returned at this point market is closed
@@ -53,7 +53,7 @@ def _read_last_datetime(tablename, conn):
 
     # the tables in CORR_CON list the index as "index" but 
     # still need to be accessed by being called "datetime" ??
-    
+
     df = pd.read_sql(f"""SELECT * FROM {tablename}""", conn)
     df.datetime = pd.to_datetime(df.datetime)
 
@@ -77,28 +77,13 @@ def _set_request_start_timestamp(timeframe, tablename, conn):
         return request_start
 
 
-def _set_start_time(symbol, timeframe, num_candles=9999):
-    ''' Set request 'start' time based on the last row in the db, 
-        otherwise if there's no data just request a bunch of candles. '''
-
-    timeframe = str(timeframe)
-    
-    if _get_latest_datetime(symbol, timeframe):
-        start = _get_latest_datetime(symbol, timeframe)
-
-    else: 
-        start = round(time.time()) - (num_candles * seconds_per_candle[timeframe])
-
-    return start
-
-
 def finnhub_ohlc_request(symbol, timeframe):
     ''' This doesn't account for weekend gaps. So requesting small 
         amounts of M1 candles can cause problems on weekends.  Max returned candles
         seems to be about 650-800.  Finnhub only returns closed candles, not the current candle. '''
 
     
-    start = _set_start_time(symbol, timeframe)
+    start = _set_request_start_timestamp(symbol, timeframe)
     end = round(time.time())
 
     if 'OANDA' in symbol:
@@ -136,6 +121,7 @@ def finnhub_ohlc_request(symbol, timeframe):
 
 
 def timeframes_to_request():
+    ''' The keys in this dict are checked by parsing the current time '''
 
     times = {
         0: [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15, 
@@ -146,8 +132,8 @@ def timeframes_to_request():
         # '10': [mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10],
         5: [mt5.TIMEFRAME_M5],
         1: [mt5.TIMEFRAME_M1],
-        'test': [mt5.TIMEFRAME_M1, mt5.TIMEFRAME_M2, mt5.TIMEFRAME_M3, mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10, mt5.TIMEFRAME_M15, 
-            mt5.TIMEFRAME_M30, mt5.TIMEFRAME_H1],
+        # 'test': [mt5.TIMEFRAME_M1, mt5.TIMEFRAME_M2, mt5.TIMEFRAME_M3, mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M10, mt5.TIMEFRAME_M15, 
+        #     mt5.TIMEFRAME_M30, mt5.TIMEFRAME_H1],
     }
 
     # Reset the logic gate
@@ -163,23 +149,19 @@ def timeframes_to_request():
         # Get the list of timeframes to request depending on current time
         # starting with the highest timeframes to the lowest
         if hour == 0 and minute == 0:
-            timeframes = times['D']
+            timeframes = times[0]
             return timeframes
         
         # '15' should happen 4 times per hour (for example) so need a modulo function
         for t in [15, 5]:
 
-            if t in times:
+            if minute % t == 0:
                 timeframes = times[t]
                 return timeframes
 
-            elif minute % t == 0:
-                timeframes = times[t]
-                return timeframes
-
-        if second == 0:
-            timeframes = times['test']
-            return timeframes
+        # if second == 0:
+        #     timeframes = times['test']
+        #     return timeframes
 
 def _format_mt5_data(df):
     
@@ -196,28 +178,28 @@ def _format_mt5_data(df):
     return df
 
 def mt5_ohlc_request(symbol, timeframe, num_candles=70):
-    ''' Since this data is already stored locally, only request the minimum
-    required for trade scanning. '''
+    ''' Get a formatted df from MT5 '''
 
-    if not mt5.initialize(login=mt5_login, server="ICMarkets-Demo",password=mt5_pass):
-        print("initialize() failed, error code =", mt5.last_error())
-        quit()
+    # A request to MT5 can occasionally fail. Retry a few times to connect 
+    # and a few more times to receive data
+    for _ in range(0,2):
+        if mt5.initialize(login=mt5_login, server=mt5_server,password=mt5_pass):
+            
+            for _ in range(0,5):
+                rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
+                
+                if len(rates) > 0:
+                    df = pd.DataFrame(rates)
+                    df = _format_mt5_data(df)
+                    return df
 
-     # If data request fails, re-attempt once
-    try:
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
-    except:
-        time.sleep(0.25)
-        try:
-            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
-        except:
-            print(f'\n ~~~ failed to retrieve {symbol} {timeframe} data ~~~')
-            return None
+            print(f'\n ~~~ Request to MT5 failed. [{symbol} {timeframe}] ~~~')
+            return
+        
+        # If init failed pause before retry
+        time.sleep(0.1)
 
-    df = pd.DataFrame(rates)
-    df = _format_mt5_data(df)
-
-    return df
+    print("MT5 initialize() failed, error code =", mt5.last_error())
 
 def _delete_duplicate_rows(symbol):
 
