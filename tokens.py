@@ -36,3 +36,4 @@ fx_token = '9a018ed0b2a87bf2bfa22ed47b745e13715567fe'
 # IC Markets MT5 account info
 mt5_login = 50341259
 mt5_pass = "ZhPcw6MG"
+mt5_server = "ICMarkets-Demo"
