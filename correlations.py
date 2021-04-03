@@ -7,9 +7,8 @@ import pathlib
 import sqlite3
 import mplfinance as mpf
 from symbols_lists import mt5_symbols, fin_symbols, spreads
-from ohlc_request import mt5_ohlc_request
+from ohlc_request import mt5_ohlc_request, _read_last_datetime
 from create_db import ohlc_db, correlation_db
-from indexes import _read_last_timestamp
 from tokens import mt5_login, mt5_pass
 
 '''
@@ -52,7 +51,7 @@ shift_periods = [0, 10, 50, 150, 300, 500, 700]
 OHLC_CON = sqlite3.connect(ohlc_db)
 CORR_CON = sqlite3.connect(r'C:\Users\ru\forex\db\correlation3tfs.db')
 
-def _get_data(symbol, tf, corr_period, hist_fill=True, spread=None):
+def _get_data(key_symbol, symbol, tf, corr_period, hist_fill=True, spread=None):
 
     # If this is a historical overwrite
     if hist_fill == True:
@@ -60,12 +59,13 @@ def _get_data(symbol, tf, corr_period, hist_fill=True, spread=None):
 
     else:
         # First figure out how much data is needed by getting the last correlation timestamp
-        timestamp = _read_last_timestamp(f'{symbol}_{tf}', CORR_CON)
-        if timestamp:
-            minutes_diff = (datetime.now() - timestamp).total_seconds() / 60.0
+        start = _read_last_datetime(f'{key_symbol}_{tf}', CORR_CON)
+        if start:
 
+            minutes_diff = (pd.Timestamp.now() - start).total_seconds() / 60.0
+            
             # How many 5 minute periods exist in that range
-            candle_count = int(minutes_diff) / 5
+            candle_count = minutes_diff // 5
             candle_count = corr_period + int(candle_count)
 
         # If that table didn't exists in the db do a hisorical fill
@@ -91,10 +91,11 @@ def _get_data(symbol, tf, corr_period, hist_fill=True, spread=None):
 
     return df
 
-def _normalize(df, col):
-    ''' normalize the specified column within a dataframe '''
-
-    df[f'{col}'] = (df[f'{col}'] - min(df[f'{col}'])) / (max(df[f'{col}']) - min(df[f'{col}']))
+def _normalize(df, *columns):
+    ''' normalize the specified columns within a dataframe '''
+    
+    for col in columns:
+        df[col] = (df[col] - min(df[col])) / (max(df[col]) - min(df[col]))
 
     return df
 
@@ -132,9 +133,18 @@ def _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shif
 
     return final_df
 
+def _save_data(key_symbol, tf, final_df):
+    ''' Read db table into memory, append new data to it and save. Otherwise 
+    an existing db table wouldn't accept any new correlation symbol columns '''
+
+    existing = pd.read_sql(f'SELECT * FROM {key_symbol}_{tf}', CORR_CON)
+    final_df = existing.append(final_df).dropduplicates(subset='datetime')
+    final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
+
 def find_correlations(historical_fill=False):
-    ''' Find correlation between FX majors and other symbols and spreads
-    over a rolling window  '''
+    ''' Find correlation between FX majors and other symbols/spreads
+    over a rolling window. Setting historical_fill as True will overwrite 
+    existing data, False will append '''
  
     # Make a single list of all the symbols used for leading correlation
     cor_symbols = []   
@@ -155,7 +165,7 @@ def find_correlations(historical_fill=False):
             print(f'{tf}: {length} symbols left')
 
             # Get the data
-            key_df = _get_data(key_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
+            key_df = _get_data(key_symbol, key_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
 
             # Now iter thru the comparison symbols, saving corr  ata to final_df
             final_df = pd.DataFrame(index=key_df.index)
@@ -165,11 +175,11 @@ def find_correlations(historical_fill=False):
                     cor_df = _make_spread(key_symbol, tf, CORR_PERIOD, hist_fill=historical_fill, spread=cor_symbol)
 
                 elif cor_symbol in mt5_symbols['others']:
-                    cor_df = _get_data(cor_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
+                    cor_df = _get_data(key_symbol, cor_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
 
-                # Ensure matching df lengths (drop the overnight overnight if there are any)
+                # Ensure matching df lengths (drop the overnight periods if there are any)
                 temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
-                cor_df = cor_df[cor_df.index.isin(temp_key_df.index)]
+                cor_df = cor_df[cor_df.index.isin(temp_key_df.index)].copy()
 
                 temp_key_df = _normalize(temp_key_df, 'close')
                 cor_df = _normalize(cor_df, 'close')
@@ -198,42 +208,36 @@ def find_correlations(historical_fill=False):
                 # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
                 overnight = key_df.copy()
                 overnight['cor'] = shift_val['data']
-                overnight['cor_close'] = cor_df.close.shift(shift_val['shift'])
+                overnight['cor_close'] = cor_df.close
                 overnight = overnight.fillna(method='ffill')
-                overnight = overnight.dropna() # if it was shifted, it will the shift value worth of nans
+                overnight = overnight.dropna() # nans if shifted
 
                 # I'll keep the normalized close values of the key and cor symbols so that 
                 # later on I can scan the symbols which have the highest cor with the value line
-                overnight = _normalize(overnight, 'close')
-                overnight = _normalize(overnight, 'cor_close')
+                overnight = _normalize(overnight, 'close', 'cor_close')
 
                 # Get list of rows where correlation is above threshold
                 cor_rows = overnight[abs(overnight.cor) > MIN_CORR].index
                 if len(cor_rows) > 0:
-                
                     print(f'cor count for {cor_symbol}:',len(cor_rows),'... shift:', shift_val['shift'])
                     final_df = _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift_val['shift'], final_df)
-                
+
+            if final_df.empty:
+                continue  
+
             # Once all the symbols and spreads have been analyzed, save the data
             # before continuing on to the next FX major
-            final_df = final_df.dropna(subset=f'*{key_symbol}*')
+            final_df = final_df.dropna(subset=[f'*{key_symbol}*'])
             print(f'{key_symbol} final df length:', len(final_df))
             if len (final_df) > 2:
-                
-                # If this is a historical overwrite
-                if historical_fill == True:
-                    final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
+                 _save_data(key_symbol, tf, final_df)
 
-                else:
-                    final_df = final_df[final_df.index > _read_last_timestamp(f'{key_symbol}_{tf}', CORR_CON)]
-                    final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='append', index=True)
-            
     OHLC_CON.close()
     CORR_CON.close()
 
 if __name__ == '__main__':
-
+ 
     print('\ntime started:', datetime.now())
     s = time.time()
-    find_correlations(historical_fill=True)
+    find_correlations(historical_fill=False)
     print('minutes elapsed:', (time.time() - s)/60)
