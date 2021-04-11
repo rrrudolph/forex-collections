@@ -1,3 +1,10 @@
+trading_symbols = [
+    'UBER.NYSE',
+    'XAUUSD',
+    'XAGUSD',
+    'XTIUSD',
+    
+]
 
 mt5_symbols = {
     'majors': [
@@ -8,13 +15,12 @@ mt5_symbols = {
         'CADJPY', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'NZDCAD', 
         'NZDCHF', 'NZDJPY', 'NZDUSD',
     ],
-
     'others': [
-    # 'USDSGD', 'EURPLN', 
-    # 'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
-    # 'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
-    # 'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
-    # 'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
+    'USDSGD', 'EURPLN', 
+    'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
+    'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
+    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
+    'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
     'XNGUSD', 
     'XTIUSD', 
     'XBRUSD', 
@@ -48,30 +54,32 @@ mt5_symbols = {
     'ODFL.NAS', # 
     'SIL.NYSE', # 
     'GDX.NYSE', # 
-    'SHCW.NYSE', # FINANCIAL
-    'ESS.NYSE', # REALTY
+    # 'SHCW.NYSE', # FINANCIAL
+    # 'ESS.NYSE', # REALTY
+    'PKG.NYSE',
+    'CF.NYSE',
     ]
 }
 
 fin_symbols = [
-    # 'MOO', 
     'HYG', 
     'VIXM', 
     'VIXY', 
-    # 'XLF', 
-    # 'XLU', 
     'XLY', 
-    # 'XLP', 
     'IWF', 
     'IWD', 
-    # 'BAC', 
     'REET',
     'OANDA:XCU_USD',
+    # 'MOO', 
+    # 'XLF', 
+    # 'XLU', 
+    # 'XLP', 
+    # 'BAC', 
 ]
 
 spreads = [
-    # sometimes making spreads will error. I've fixed that by first 
-    # requesting the data from the indiviudual symbols (put them in 'others')
+    # if a data request fails when making a spread try putting the individual
+    # symbols into the "others" dict as well. sometimes it helps for some reason.
     'XTIUSD_XAUUSD',
     'XTIUSD_XAGUSD',
     'XTIUSD_XBRUSD',
@@ -101,10 +109,10 @@ spreads = [
     'AAL.NAS_ODFL.NAS',
     'XLP.NYSE_XOP.NYSE',
     'GDX.NYSE_SIL.NYSE',
-    'SCHW.NYSE_ESS.NYSE',
+    # 'SCHW.NYSE_ESS.NYSE',
     'COF.NYSE_AVB.NYSE',
+    'PKG.NYSE_CF.NYSE', # Consumer cyclical _ Basic Material (aggriculturals)
 ]
-
     
 # This dict will store the currency indexes as data is received
 indexes = {
@@ -118,6 +126,7 @@ indexes = {
     'CHF': [],
 }
 
+# This is a mapping for finnhub
 fx_timeframes = {
     '1': 'm1',
     '5': 'm5',
@@ -125,7 +134,6 @@ fx_timeframes = {
     '60': 'H1',
     'D': 'D1'
 }
-
 
 # This is to handle finnhub 'num_candles' request automatically
 seconds_per_candle = {
@@ -135,7 +143,6 @@ seconds_per_candle = {
     '60': 3600,
     'D': 86400
 }
-
 
 te_countries = [
     'https://tradingeconomics.com/united-states/indicators',
@@ -148,7 +155,6 @@ te_countries = [
     'https://tradingeconomics.com/switzerland/indicators',
 ]
 
-
 te_ccys = {
     'united-states' : 'USD',
     'euro-area': 'EUR',
@@ -159,7 +165,6 @@ te_ccys = {
     'new-zealand': 'NZD',
     'switzerland': 'CHF'
 }
-
 
 bonds_table_nums = {
     'Australia': 2, 
