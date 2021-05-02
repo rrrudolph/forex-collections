@@ -11,7 +11,7 @@ from datetime import datetime
 import concurrent.futures
 from create_db import ohlc_db
 from symbols_lists import fin_symbols, seconds_per_candle
-from tokens import fin_token, mt5_login, mt5_pass, mt5_server
+from tokens import fin_token, mt5_login, mt5_pass, mt5_server, bonds_sheet
 
 ohlc_con = sqlite3.connect(ohlc_db)
 
@@ -182,16 +182,16 @@ def mt5_ohlc_request(symbol, timeframe, num_candles=70):
 
     # A request to MT5 can occasionally fail. Retry a few times to connect 
     # and a few more times to receive data
-    for _ in range(0,2):
+    for _ in range(2):
         if mt5.initialize(login=mt5_login, server=mt5_server,password=mt5_pass):
             
-            for _ in range(0,5):
-                rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)
-                
-                if len(rates) > 0:
-                    df = pd.DataFrame(rates)
-                    df = _format_mt5_data(df)
-                    return df
+            for _ in range(5):
+                rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)  
+                if rates is not None:
+                    if len(rates) > 0:
+                        df = pd.DataFrame(rates)
+                        df = _format_mt5_data(df)
+                        return df
 
             print(f'\n ~~~ Request to MT5 failed. [{symbol} {timeframe}] ~~~')
             return
@@ -206,6 +206,26 @@ def _delete_duplicate_rows(symbol):
     df = pd.read_sql(f'SELECT * FROM {symbol}', ohlc_con)
     df = df.drop_duplicates()
     df.to_sql(f'{symbol}', ohlc_con, if_exists='replace', index=True)
+
+
+def read_10y_bonds_and_clean(sheet=bonds_sheet) -> pd.DataFrame:
+    ''' get the bond data and normalize for plotting with ohlc index data '''
+    
+    df = pd.DataFrame(sheet.get_all_values())
+
+    # Scrub n Clean
+    df = df.set_index(df.iloc[:, 0])
+    df.columns = df.iloc[0]
+    df = df.iloc[1:, 1:]
+    df.index = pd.to_datetime(df.index)
+    df = df.replace('', np.nan)
+    df = df.fillna(method='ffill')
+    df = df.astype(float)
+
+    # Only interested in 10s
+    df = df.iloc[:, 1::2]
+
+    return df
 
 
 def infinite_request():
