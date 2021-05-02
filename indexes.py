@@ -22,6 +22,39 @@ For some reason the time adjustment is different for a tick request
 from mt5 than it is for a candle request.
 '''
 
+def _make_10y_bond_indexes(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    ''' Follow the same process as making the currency indexes.
+    Eg conver to diffs them cumsum, norm, aggregate diff, resample.
+    The function to provide this bond data is within ohlc_request module. '''
+   
+    # Convert to diffs
+    df = df.diff()
+    df = df.dropna()
+    df = df.apply(lambda x: x.cumsum())
+    df = df.apply(lambda x: (x - min(x)) / (max(x) - min(x))) # normalize
+
+    # create the "counter pair" for each symbol. ie USD10Y - DE - GB - JP....
+    # so iter thru list of columns and whichever one im on, get sum of every
+    # column except the current one. once that's done, I will re-normalize
+    # and then create the actual spread. the spread will just be the current
+    # iterable minus that aggregate sum that was normalized.
+    agg_sum = df.apply(lambda x: x.sum(), axis=1)
+
+    symbols = {}
+    for name in df.columns.tolist():
+        x = agg_sum - df[f'{name}']
+        x = (x - min(x)) / (max(x) - min(x))  # no need to average
+        x = df[f'{name}'] - x
+        symbols[name] = x
+
+    # damn Im getting good!
+
+    final = pd.DataFrame(symbols)
+    final.index = df.index
+    final = final.apply(lambda x: x.resample(timeframe).last())
+
+    return final
+
 def _request_ticks_and_resample(pair, period, _from, _to):
     ''' Ticks will be resampled into 1 second bars '''
 
@@ -255,14 +288,17 @@ def _read_last_timestamp(tablename, conn):
     ''' Open a db table and get the last timestamp that exists.
     Used to db updates '''
 
-    df = pd.read_sql(f'''SELECT datetime from {tablename}
-                        ORDER BY datetime DESC
-                        LIMIT 1''', conn)
-    df.datetime = pd.to_datetime(df.datetime)
-    timestamp = df.values[0]
+    try:
+        df = pd.read_sql(f'''SELECT datetime from {tablename}
+                            ORDER BY datetime DESC
+                            LIMIT 1''', conn)
+        df.datetime = pd.to_datetime(df.datetime)
+        timestamp = df.values[0]
 
-    return timestamp
+        return timestamp
     
+    except:
+        return None
 
 def continuous_db_update():
     ''' Request ticks, resample into 1 second bars and save to the database '''
