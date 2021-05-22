@@ -5,12 +5,13 @@ from datetime import datetime
 import time
 import pathlib
 import sqlite3
-from ohlc_request import _market_open
-from symbols_lists import mt5_symbols
+from pandas.core.indexes.base import ensure_index
 import mplfinance as mpf
-from create_db import ohlc_db
+import concurrent.futures
+from symbols_lists import mt5_symbols, indexes
+from tokens import mt5_login, mt5_pass
 
-OHLC_CON = sqlite3.connect(ohlc_db)
+INDEX_OHLC = r'C:\Users\ru\forex\db\indexes'
 vol_tick = pd.DataFrame()
 
 # Silence the SettingWithCopyWarning in _final_ohlc_cleaning
@@ -55,9 +56,9 @@ def _make_10y_bond_indexes(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
     return final
 
-def _request_ticks_and_resample(pair, period, _from, _to):
-    ''' Ticks will be resampled into 1 second bars '''
-
+def _request_ticks_and_resample(pair, period, _from, _to) -> list:
+    ''' Ticks will be resampled into 1 second bars. Returns a list with
+    name of pair in index 0 and dataframe in index 1. '''
 
     ticks = mt5.copy_ticks_range(pair, _from, _to, mt5.COPY_TICKS_ALL)
     df = pd.DataFrame(ticks)
@@ -94,7 +95,8 @@ def _request_ticks_and_resample(pair, period, _from, _to):
     # Any remaining nans should be forward filled
     resampled = resampled.fillna(method='ffill')
 
-    return resampled
+    # Return the name of pair along with the dataframe
+    return [pair, resampled]
 
 def _normalize(df):
     
@@ -128,27 +130,38 @@ def _invert(df):
 
     return df
 
-def _resample(df, final_period):
-    ''' Combine the individual dfs of each pair into one index df and then 
-    resample into whatever timeframe is desired. For plotting on MT5, resample to 1min.'''
+def _reorder_timeframe_if_needed(timeframe: str) -> str:
+    ''' Reorder if needed, number must come first. '''
 
-    # Resample 
-    open = df.open.resample(final_period).first()
-    high = df.high.resample(final_period).max()
-    low = df.low.resample(final_period).min()
-    close = df.close.resample(final_period).last()
-    volume = df.volume.resample(final_period).sum()
-    # voltick = df.voltick.resample(final_period).last()
+    if len(timeframe) <= 3: 
+        if timeframe[0] == ('H' or 'M'):
+            tf = timeframe[::-1]
+        else:
+            tf = timeframe
+    else:
+        tf = timeframe
     
-    resampled = pd.DataFrame({'open': open,
-                            'high': high,
-                            'low': low,
-                            'close': close,
-                            'volume': volume,
-                            # 'voltick': voltick
-                             })
+    return tf
 
-    return resampled
+def _resample(ohlc_df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    ''' Just a simple resampling into higher timeframes for whatever
+    OHLCV data set gets passed in. '''
+
+    tf = _reorder_timeframe_if_needed(timeframe)
+
+    o = ohlc_df.open.resample(tf).first()
+    h = ohlc_df.high.resample(tf).max()
+    l = ohlc_df.low.resample(tf).min()
+    c = ohlc_df.close.resample(tf).last()
+    v = ohlc_df.volume.resample(tf).sum()
+
+    ohlc_df = pd.DataFrame({'open': o,
+                        'high': h,
+                        'low': l,
+                        'close': c,
+                        'volume': v,
+                        })
+    return ohlc_df
 
 def _final_ohlc_cleaning(df, ccy):
 
@@ -174,62 +187,107 @@ def _final_ohlc_cleaning(df, ccy):
 
     return df
 
-def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60, _from=None):
-    '''  '''
+def build_in_memory_database(pairs: list, initial_period='1s', days=60, _from=None) -> dict:
+    ''' Use threading to get all data into memory.  Structured into a dict
+    with the name of a pair as the key and the value being a dataframe of
+    1 second periods. '''
 
-    if not mt5.initialize(login=50341259, server="ICMarkets-Demo",password="ZhPcw6MG"):
+    if not mt5.initialize(login=mt5_login, server="ICMarkets-Demo",password=mt5_pass):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
 
-    indexes = {
-        'USD': [],
-        'EUR': [],
-        'GBP': [],
-        'JPY': [],
-        'AUD': [],
-        'NZD': [],
-        'CAD': [],
-        'CHF': [],
-    }
     # Create this timestamp outside of loop so it doesn't change.
-    # _from gets passed when a continuous db update is being used and becomes
-    # the last timestamp in the db
     _to = datetime.now()
-
     if _from is None:
         _from = _to - pd.Timedelta(f'{days} day')
-    else:
-        _from -= pd.Timedelta('3 day')
 
-    for pair in pairs:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [] 
+        for pair in pairs:
+            futures.append(executor.submit(_request_ticks_and_resample, pair=pair, period=initial_period, _from=_from, _to=_to))
         
-        df = _request_ticks_and_resample(pair, initial_period, _from, _to)
+        database = {} 
+        for future in concurrent.futures.as_completed(futures):
+            data = future.result()
+            database[data[0]] = data[1] # unpack name of pair and dataframe
+
+        # confirmed working
+        return database
+
+def _functions_handler(database: dict, index: str, final_period: str) -> list:
+    ''' This will handle a single index, looping through each key in
+    the dict and if the name of the key contains the symbol of the index
+    it will process that data appropriately. (If index is EUR, it will
+    process EURCAD but not AUDNZD etc)'''
+
+    aggregate_data = pd.DataFrame()
+    for pair, df in database.items():
         
-        # Rather than deal with the prices, use the diff from one price to the next
-        df = _diff(df)
+        # Base currency
+        if pair[:3] == index:
+            base = _diff(df.copy())
+            base = _cumsum(base)
+            base = _normalize(base)
 
-        inverted = _invert(df.copy())
-        inverted = _cumsum(inverted)
-        inverted = _normalize(inverted)
-        df = _cumsum(df)
-        df = _normalize(df)
+            if len(aggregate_data) == 0:
+                aggregate_data = base
+            else:
+                aggregate_data += base
+            continue
+        
+        # Counter currency
+        if pair[-3:] == index:
+            counter = _diff(df.copy())
+            counter = _invert(counter)
+            counter = _cumsum(counter)
+            counter = _normalize(counter)
 
-        # Add the df to its proper dict index
-        for ccy in indexes:
+            if len(aggregate_data) == 0:
+                aggregate_data = counter
+            else:
+                aggregate_data += counter
 
-            if ccy == pair[:3]:
-                if len(indexes[ccy]) == 0:
-                    indexes[ccy] = df
-                else:
-                    indexes[ccy] += df
+    # Resample into some other timeframe
+    if final_period != '1s':
+        aggregate_data = _resample(aggregate_data, final_period)
+
+    aggregate_data = _final_ohlc_cleaning(aggregate_data, index)
+
+    return [index, aggregate_data]
+
+def run_calculation_processes(database, indexes, final_period='5 min') -> None:
+    ''' This will create the separate processes, one for each index. Ultimately
+    the data will be saved to parquet files. '''
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [] 
+        for index in indexes:
+            futures.append(executor.submit(_functions_handler, database=database, index=index, final_period=final_period))
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                data = future.result()
+                index = data[0]
+                df = data[1]
+            except Exception:
+                print('A process failed... thats all I know.')
                 continue
-            
-            # Counter currency
-            if ccy == pair[-3:]:
-                if len(indexes[ccy]) == 0:
-                    indexes[ccy] = inverted
-                else:
-                    indexes[ccy] += inverted
+            if df.empty:
+                print(index, 'dataframe is empty')
+            df.to_parquet(pathlib.Path(INDEX_OHLC, f'{index}_M5.parquet'), index=True)
+
+if __name__ == '__main__':
+    # while True:
+    s = time.time()
+    print('building databse')
+    database = build_in_memory_database(mt5_symbols['majors'], days=20)  # confirmed working
+    print('done. now creating indexes')
+    run_calculation_processes(database, indexes, final_period='5 min')
+    print(f'Finished in {(time.time()-s)/60} minutes.')
+    time.sleep(20*60)
+
+# 40 days without futures / with futures: 
+#                2.42 min / 1.38 min
     
     # Voltick
     # the better way to do this is just to save the 1 second data raw. then run some science.
@@ -245,135 +303,6 @@ def make_ccy_indexes(pairs, initial_period='1s', final_period='1 min', days=60, 
     #                                 ]
 
     #     print('number of voltick signals:', len(df[df.voltick.notna()]))
-
-    # Resample into some other timeframe
-    for ccy in indexes:
-
-        if final_period != '1s':
-            indexes[ccy] = _resample(indexes[ccy], final_period)
-    
-        indexes[ccy] = _final_ohlc_cleaning(indexes[ccy], ccy)
-
-    return indexes
-
-def _save_data(df, ccy):
-       
-    # df.to_sql(f'{ccy}', OHLC_CON, if_exists='replace', index=True)
-    df.to_sql(f'{ccy}', OHLC_CON, if_exists='append', index=True)
-    
-    # OHLC_CON.close()
-        
-def save_index_data_for_mt5(indexes):
-    ''' format the data for mt5 and save to csv. '''
-
-    for k in indexes:
-        
-        df = indexes[k]
-
-        # add the necessary columns
-        df['date'] = [d.date() for d in df.index]
-        df['time'] = [d.time() for d in df.index]
-        df['r_vol'] = 0
-        df['spread'] = 0
-        
-        # reorder
-        df = df[['date', 'time', 'open', 'high', 'low', 'close', 'volume', 'r_vol', 'spread']]
-
-        # save to csv
-        p = r'C:\Users\ru\AppData\Roaming\MetaQuotes\Terminal\67381DD86A2959850232C0BA725E5966\bases\Custom'
-        
-        df.to_csv(pathlib.Path(p, f'{k}x.csv'), index=False)
-
-def _read_last_timestamp(tablename, conn):
-    ''' Open a db table and get the last timestamp that exists.
-    Used to db updates '''
-
-    try:
-        df = pd.read_sql(f'''SELECT datetime from {tablename}
-                            ORDER BY datetime DESC
-                            LIMIT 1''', conn)
-        df.datetime = pd.to_datetime(df.datetime)
-        timestamp = df.values[0]
-
-        return timestamp
-    
-    except:
-        return None
-
-def continuous_db_update():
-    ''' Request ticks, resample into 1 second bars and save to the database '''
-    
-    ccys = [
-        'USD',
-        'EUR',
-        'GBP',
-        'JPY',
-        'AUD',
-        'NZD',
-        'CAD',
-        'CHF',
-    ]
-
-    timestamps = []
-    for ccy in ccys:
-
-        try:
-
-            timestamp = _read_last_timestamp(ccy, OHLC_CON)
-            timestamps.append(timestamp)
-
-            # Get the timestamp value
-            first = min(timestamps)[0]
-
-        # If this is the first request start with 60 days
-        except:
-            first = datetime.now() - pd.Timedelta('60 days')
-
-    # Request ticks between 'first' and now
-    indexes = make_ccy_indexes(mt5_symbols['majors'], _from=first, final_period='1s')
-
-    # Only append new data
-    for last_timestamp, ccy in zip(timestamps, indexes):
-
-        df = indexes[ccy]
-        df = df[df.index > last_timestamp[0]]
-        _save_data(df, ccy)
-
-# 60 days takes 8.5 mins
-if __name__ == '__main__':
-
-    # indexes = make_ccy_indexes(mt5_symbols['majors'], final_period='60 min', days=15)
-    while True:
-        
-        if _market_open:
-
-            second = datetime.now().second
-            if second == 0:
-
-                continuous_db_update()  # 3 days takes 30 seconds to update
-
-
-    usd = indexes['USD']
-    eur = indexes['EUR']
-    gbp = indexes['GBP']
-    cad = indexes['CAD']
-    jpy = indexes['JPY']
-    aud = indexes['AUD']
-    nzd = indexes['NZD']
-    chf = indexes['CHF']
-    
-    import mplfinance as mpf
-
-    mpf.plot(usd,type='candle',show_nontrading=False, volume=True, title='usd')
-    mpf.plot(eur,type='candle',show_nontrading=False, volume=True, title='eur')
-    mpf.plot(gbp,type='candle',show_nontrading=False, volume=True, title='gbp')
-    mpf.plot(cad,type='candle',show_nontrading=False, volume=True, title='cad')
-    mpf.plot(jpy,type='candle',show_nontrading=False, volume=True, title='jpy')
-    mpf.plot(aud,type='candle',show_nontrading=False, volume=True, title='aud')
-    mpf.plot(nzd,type='candle',show_nontrading=False, volume=True, title='nzd')
-    mpf.plot(chf,type='candle',show_nontrading=False, volume=True, title='chf')
-    
-
     # df = df.reset_index()  # otherwise plot weekend gaps
 
     
