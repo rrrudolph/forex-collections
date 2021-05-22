@@ -1,9 +1,10 @@
+import MetaTrader5 as mt5
+
+# To make this extensible I should not separate the mt5 symbols but instead have a list of symbols I want to track
 trading_symbols = [
-    'UBER.NYSE',
     'XAUUSD',
     'XAGUSD',
     'XTIUSD',
-    
 ]
 
 mt5_symbols = {
@@ -19,24 +20,11 @@ mt5_symbols = {
     'USDSGD', 'EURPLN', 
     'EURSEK', 'EURTRY', 'EURZAR', 'GBPSEK', 'USDCNH', 
     'USDHUF', 'USDMXN', 'USDNOK', 'USDPLN', 'USDRUB', 
-    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 
-    'BTCUSD', 'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD',
-    'XNGUSD', 
-    'XTIUSD', 
-    'XBRUSD', 
-    'XAGUSD', 
-    'XAUUSD', 
-    'XPDUSD', 
-    'XPTUSD', 
-    'DE30', 
-    'UK100', 
-    'US30', 
-    'US500', 
-    'USTEC',
-    'MOO.NYSE', 
-    'XLF.NYSE', 
-    'XLU.NYSE', 
-    'XLP.NYSE',
+    'USDSEK', 'USDTHB', 'USDTRY', 'USDZAR', 'BTCUSD', 
+    'BCHUSD', 'DSHUSD', 'ETHUSD', 'LTCUSD', 'XNGUSD', 
+    'XTIUSD', 'XBRUSD', 'XAGUSD', 'XAUUSD', 'XPDUSD', 
+    'XPTUSD', 'DE30', 'UK100', 'US30', 'US500', 'USTEC', 
+    'MOO.NYSE', 'XLF.NYSE', 'XLU.NYSE', 'XLP.NYSE',
     'XLE.NYSE', # ENERGY
     'XLI.NYSE', # INDUSTRIAL
     'XOP.NYSE', # OIL EXPORATION
@@ -113,26 +101,40 @@ spreads = [
     'COF.NYSE_AVB.NYSE',
     'PKG.NYSE_CF.NYSE', # Consumer cyclical _ Basic Material (aggriculturals)
 ]
-    
+
+mt5_timeframes = {
+    'M1': mt5.TIMEFRAME_M1,
+    'M5': mt5.TIMEFRAME_M5,
+    'M15': mt5.TIMEFRAME_M15,
+    'M30': mt5.TIMEFRAME_M30,
+    'H1': mt5.TIMEFRAME_H1,
+    'H2': mt5.TIMEFRAME_H2,
+    'H4': mt5.TIMEFRAME_H4,
+    'H6': mt5.TIMEFRAME_H6,
+    'H8': mt5.TIMEFRAME_H8,
+    'H12': mt5.TIMEFRAME_H12,
+    'D1': mt5.TIMEFRAME_D1,
+}  
+
 # This dict will store the currency indexes as data is received
-indexes = {
-    'USD': [],
-    'EUR': [],
-    'GBP': [],
-    'JPY': [],
-    'AUD': [],
-    'NZD': [],
-    'CAD': [],
-    'CHF': [],
-}
+indexes = [
+    'USD',
+    'EUR',
+    'GBP',
+    'JPY',
+    'AUD',
+    'NZD',
+    'CAD',
+    'CHF',
+]
 
 # This is a mapping for finnhub
 fx_timeframes = {
-    '1': 'm1',
-    '5': 'm5',
-    '15': 'm15',
-    '60': 'H1',
-    'D': 'D1'
+    'M1': 1,
+    'M5': 5,
+    'M15': 15,
+    'H1': 60,
+    'D1': 'D'
 }
 
 # This is to handle finnhub 'num_candles' request automatically
