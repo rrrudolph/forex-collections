@@ -27,7 +27,9 @@ to add in the overnight session and I just do a 'ffill' on the nans.
 '''
 
 # How much historical data you want 
-HIST_CANDLES = 51840  # 160 days
+# 51840  # 160 days
+# HIST_CANDLES = 51840  # 160 days
+HIST_CANDLES = 1840  
 
 # Settings for each time horizon 
 settings = {
@@ -45,11 +47,15 @@ settings = {
     },
 }
 
-shift_periods = [0, 10, 50, 150, 300, 500, 700]
+shift_periods = [0, 10, 50, 150, 300, 500, 750]
 
 # This needs to be changed to the ubuntu laptop path
 OHLC_CON = sqlite3.connect(ohlc_db)
-CORR_CON = sqlite3.connect(r'C:\Users\ru\forex\db\correlation3tfs.db')
+CORR_CON = sqlite3.connect(r'C:\Users\ru\forex\db\correlation.db')
+ 
+# Make a single list of all the symbols used for leading correlation
+cor_symbols = mt5_symbols['others'] + spreads   
+# cor_symbols.extend(fin_symbols)
 
 def _get_data(key_symbol, symbol, tf, corr_period, hist_fill=True, spread=None):
 
@@ -146,10 +152,7 @@ def find_correlations(historical_fill=False):
     ''' Find correlation between FX majors and other symbols/spreads
     over a rolling window. Setting historical_fill as True will overwrite 
     existing data, False will append '''
- 
-    # Make a single list of all the symbols used for leading correlation
-    cor_symbols = mt5_symbols['others'] + spreads   
-    # cor_symbols.extend(fin_symbols)
+
 
     # The outer loop will iter over the various correlation periods to emulate MTF value
     # Each corr period will get saved to its own table in the db
@@ -197,8 +200,8 @@ def find_correlations(historical_fill=False):
                     cor_values = cor_values.dropna()
 
                     # Update the shift dict
-                    if abs(cor_values.sum()) > shift_val['best_sum']:
-                        shift_val['best_sum'] = abs(cor_values.sum())
+                    if abs(cor_values).sum() > shift_val['best_sum']:
+                        shift_val['best_sum'] = abs(cor_values).sum()
                         shift_val['data'] = round(cor_values, 3)
                         shift_val['shift'] = shift
                 
@@ -237,15 +240,12 @@ def find_correlations(historical_fill=False):
             # print(f'{key_symbol} final df length:', len(final_df))
             _save_data(key_symbol, tf, final_df)
 
-    #OHLC_CON.close()
-    #CORR_CON.close()
+    # OHLC_CON.close()
+    # CORR_CON.close()
 
 if __name__ == '__main__':
-    find_correlations(historical_fill=True)
-
+    find_correlations(historical_fill=False)
+    
     # while True:
-    #     print('\ntime started:', datetime.now())
-    #     s = time.time()
     #     find_correlations(historical_fill=False)
-    #     print('minutes elapsed:', round((time.time() - s)/60))
-    #     time.sleep(5 * 60) # 5min
+    #     time.sleep(60 * 30) 
