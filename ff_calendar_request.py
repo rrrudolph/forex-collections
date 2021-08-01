@@ -69,7 +69,6 @@ def _update_gsheet_cell(month, year, sheet=ff_cal_sheet):
     If doing a historical fill, pass month as first arg and year as second. '''
 
     # Convert to a 3 letter month value
-    month = months[month]
     cell = fr"""=importhtml("https://www.forexfactory.com/calendar?month={month}.{year}", "table", 4)"""
 
     sheet.update_cell(1,1, cell)
@@ -139,7 +138,7 @@ def _clean_data(df, year, remove_non_numeric=True):
     df = df.drop(axis=1, columns = ['graph', 'impact', 'detail'])
 
     # Remove some unwanted rows
-    error_causers = 'Spanish|Italian|French|Bond|Data|Vote|MPC'
+    error_causers = 'Spanish|Italian|French|Bond|Data|Vote|Votes|MPC'
     df = df[~df.event.str.contains(error_causers)]
     df = df[df.time.str.contains(':')]
 
@@ -331,7 +330,7 @@ def current_month_cal_request():
             year += 1
         df2 = _update_gsheet_cell(month, year)
         df2 = _clean_data(df2, year)
-        df = pd.concat(df, df2)
+        df = pd.concat([df, df2])
     
     return df
 
@@ -464,7 +463,7 @@ def calculate_long_term_outlook() -> pd.DataFrame:
 
     # Filter for only the events I want
     events = 'PMI|Confidence|Sentiment'
-    monthly_uniques = df[df.ccy_event.str.contains(events)]
+    monthly_uniques = df[df.ccy_event.str.contains(events, na=False)]
     ccys = df.ccy.unique()
 
     # Iter through each currency
@@ -587,7 +586,8 @@ def forecast_handler(sheet=forecast_sheet):
         combined.loc[idx, 'ccy'] = 'CAD'
         combined.loc[idx, 'long_term'] = latest_cad_monthly_value.tail(1)
 
-    # Save
+    # Save data (sql can't save datetime type)
+    combined.datetime = combined.datetime.astype(str)
     combined.to_sql('forecast', ECON_CON, if_exists='replace', index=False)
 
 def verify_db_tables_exist():
