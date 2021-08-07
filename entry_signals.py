@@ -6,25 +6,149 @@ import numpy as np
 from datetime import datetime
 import time
 from create_db import econ_db
-from symbols_lists import mt5_symbols
+from symbols_lists import mt5_symbols, mt5_timeframes
 from ohlc_request import mt5_ohlc_request
-from order_params import enter_trade
 from tokens import bot
 
-# import sys
-# sys.path.append('C:/Program Files (x86)/Python38-32/code')
-# import format_functions
-# import trades
-
-
-def send_trade_alert(symbol, timeframe, pattern, bot=bot):
-    bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
-    
 econ_con = sqlite3.connect(econ_db)
-
 df = pd.DataFrame()
 timeframe = None
 symbol = None
+
+def send_trade_alert(symbol, timeframe, pattern):
+    bot.send_message(chat_id=446051969, text=f'{symbol} {timeframe} {pattern}')
+
+def _send_telegram_forecast(whatever):
+    bot.send_message(chat_id=446051969, text=whatever)
+
+def _lot_size(risk, df, i, symbol):
+    r''' Automatically set lot size based on desired risk %.
+    Set the risk % as a decimal for the first arg. '''
+
+    symb_info = mt5.symbol_info(symbol)
+    acc_info = mt5.account_info()
+
+    # get the pip value (of 0.01 lot)
+    pip_val = symb_info.trade_tick_value
+    
+    # get the distance from entry to sl in pips
+    distance = abs(df.loc[i, 'entry'] - df.loc[i, 'sl'])
+    distance /= symb_info.point * 10
+    
+    # min loss
+    loss_with_min_lot = distance * pip_val
+
+    # Divide risk per trade by loss_with_min_lot
+    risk_per_trade = risk * acc_info.equity
+    lot_size = risk_per_trade // loss_with_min_lot
+    return lot_size
+
+def _expiration(timeframe, num_candles=4):
+    ''' Set the order expiration at n candles, so it will depend on the timeframe. '''
+
+    if timeframe == mt5.TIMEFRAME_D1: # daily
+        t_delta = pd.Timedelta('1 day')
+    else:
+        t_delta = pd.Timedelta(f'{timeframe} min')
+    return datetime.now() + num_candles * t_delta
+
+def _increase_volume_if_forecast(df, i, symbol):
+    ''' If there are forecasts that contribute to the trade's liklihood 
+    of working out, increase the lot size.  There's definitely more to 
+    be coded here about how to interpret forecast data. '''
+
+
+    forecast_df = pd.read_sql('SELECT * FROM outlook', econ_con)
+
+    base_ccy = symbol[:3]
+    counter_ccy = symbol[-3:]
+
+    # Check the forecasts
+    base_sum = round(sum(forecast_df.forecast[forecast_df.ccy == base_ccy]), 2)
+    counter_sum = round(sum(forecast_df.forecast[forecast_df.ccy == counter_ccy]), 2)
+
+    if base_sum or counter_sum:
+        # Send the forecast data to telegram
+        _send_telegram_forecast(f'{base_ccy}: {base_sum}  {counter_ccy}: {counter_sum}')
+
+    # Check if trade is long or short
+    if df.loc[i, 'pattern'][-2:] == '_b':
+        trade_type = mt5.ORDER_TYPE_BUY_STOP
+
+    if df.loc[i, 'pattern'][-2:] == '_s':
+        trade_type = mt5.ORDER_TYPE_SELL_STOP
+
+    # risk multiplier starts at 1%
+    x = 0.01
+    if trade_type == mt5.ORDER_TYPE_BUY_STOP:
+        if base_sum > 0 and counter_sum < 0:
+            x *= 2
+        elif base_sum > 0 or counter_sum < 0:
+            x *= 1.5
+        
+        # if totally opposite
+        elif base_sum < 0 and counter_sum > 0:
+            x *= 0.1
+    
+    # If it's a short trade reverse the forecast numbers
+    if trade_type == mt5.ORDER_TYPE_SELL_STOP:
+        if base_sum < 0 and counter_sum > 0:
+            x *= 2
+        elif base_sum < 0 or counter_sum > 0:
+            x *= 1.5
+        
+        # if totally opposite 
+        elif base_sum > 0 and counter_sum < 0:
+            x *= 0.1
+    
+    return x, trade_type
+
+def enter_trade(df, i, symbol, timeframe):
+    ''' Read from the df of current setups and set lot size based on 
+    the forecast rating for the currencies in the symbol. '''
+
+    risk, trade_type = _increase_volume_if_forecast(df, i, symbol)
+
+    lot_size = _lot_size(risk, df, i, symbol)
+    lot_size *= 0.1 ############ too big
+    lot_size = round(lot_size, 2)
+
+    expiration = _expiration(timeframe)
+
+    request_1 = {
+    "action": mt5.TRADE_ACTION_PENDING,
+    "symbol": symbol,
+    "volume": lot_size,
+    "type": trade_type,
+    "price": df.loc[i, 'entry'],
+    "sl": df.loc[i, 'sl'],
+    "tp": df.loc[i, 'tp1'],  ### TP 1
+    "deviation": 20,
+    "magic": 234000,
+    "comment": f"{df.loc[i, 'pattern']} {timeframe}",
+    "type_time": mt5.ORDER_TIME_DAY,
+    "type_filling": mt5.ORDER_FILLING_FOK,
+    }
+                                                                                                                       
+    request_2 = {
+    "action": mt5.TRADE_ACTION_PENDING,
+    "symbol": symbol,
+    "volume": lot_size,
+    "type": trade_type,
+    "price": df.loc[i, 'entry'],
+    "sl": df.loc[i, 'sl'],
+    "tp": df.loc[i, 'tp2'],  ### TP 2
+    "deviation": 20,
+    "magic": 234000,
+    "comment": f"{df.loc[i, 'pattern']} {timeframe}",
+    "type_time": mt5.ORDER_TIME_DAY,
+    "type_filling": mt5.ORDER_FILLING_FOK,
+    }
+
+
+    # send a trading request
+    trade = mt5.order_send(request_1)
+    trade = mt5.order_send(request_2)
 
 def spread_is_ok(df, i, symbol):
 
@@ -103,17 +227,22 @@ def find_peaks(df):
                 (df.low < df.low.shift(4)) 
                 ]
 
-    win = 4
+    # Since I'm not using an integer index I gotta get a datetime diff value
+    # and apply that to whatever win value I'm looking for
+    row_diff = df.index[1] - df.index[0]
+
+    win = 4  
     for row in temp.itertuples(name=None, index=True):
         i = row[0]
         # Price move from the peak (forwards then backwards)
-        if (df.loc[i:i+win, 'high'].max() - df.loc[i, 'low']) > fade * df.loc[i, 'atr']:
-            if (df.loc[i-win:i, 'high'].max() - df.loc[i, 'low']) > fade * df.loc[i, 'atr']:
+        if df.loc[i:i+win * row_diff, 'high'].max() - df.loc[i, 'low'] > fade * df.loc[i, 'atr']:
+            if df.loc[i-win * row_diff:i, 'high'].max() - df.loc[i, 'low'] > fade * df.loc[i, 'atr']:
                 df.loc[i, 'peak_lo'] = 'fade'
-                pass
+                continue
+
         # If not found look for the spring sized trades
-        if (df.loc[i:i+win, 'high'].max() - df.loc[i, 'low']) > spring * df.loc[i, 'atr']:
-            if (df.loc[i-win:i, 'high'].max() - df.loc[i, 'low']) > spring * df.loc[i, 'atr']:
+        if (df.loc[i:i+win * row_diff, 'high'].max() - df.loc[i, 'low']) > spring * df.loc[i, 'atr']:
+            if (df.loc[i-win * row_diff:i, 'high'].max() - df.loc[i, 'low']) > spring * df.loc[i, 'atr']:
                 df.loc[i, 'peak_lo'] = 'spring'
 
 
@@ -127,19 +256,147 @@ def find_peaks(df):
             (df.high > df.high.shift(4)) 
             ]
 
-    win = 4
+    win = 4 
     for row in temp.itertuples(name=None, index=True):
         i = row[0]
         # Price move from the peak (forwards then backwards)
-        if (df.loc[i, 'high'] - df.loc[i:i+win, 'low'].min()) > fade * df.loc[i, 'atr']:
-            if (df.loc[i, 'high'] - df.loc[i-win:i, 'low'].min()) > fade * df.loc[i, 'atr']:
+        if (df.loc[i, 'high'] - df.loc[i:i+win * row_diff, 'low'].min()) > fade * df.loc[i, 'atr']:
+            if (df.loc[i, 'high'] - df.loc[i-win * row_diff:i, 'low'].min()) > fade * df.loc[i, 'atr']:
                 df.loc[i, 'peak_hi'] = 'fade'
-                pass
+                continue
+            
         # If not found look for the swing sized swings
-        if (df.loc[i, 'high'] - df.loc[i:i+win, 'low'].min()) > spring * df.loc[i, 'atr']:
-            if (df.loc[i, 'high'] - df.loc[i-win:i, 'low'].min()) > spring * df.loc[i, 'atr']:
+        if (df.loc[i, 'high'] - df.loc[i:i+win * row_diff, 'low'].min()) > spring * df.loc[i, 'atr']:
+            if (df.loc[i, 'high'] - df.loc[i-win * row_diff:i, 'low'].min()) > spring * df.loc[i, 'atr']:
                 df.loc[i, 'peak_hi'] = 'spring'
     # print(len(df[df.peak.notna()]), 'atr filtered peaks')
+
+def find_simple_peaks(df):
+    ''' This version will not use ATR filtering and is intended to be
+    used specifically for thrust start and end locations as well
+    as BRLs. The BRLs and start peak size will be smaller than the end peaks. '''
+
+    # Specificy different columns for the down swings and up swings,
+    # otherwise they will overwrite each other. An alternative is to not
+    # use different peak sizes for start and ends, in that case both
+    # swing types could share.
+
+    df['up_peak'] = np.nan
+    df['down_peak'] = np.nan
+
+    start_downs = df[
+            (df.high > df.high.shift(1)) 
+            &
+            (df.high >= df.high.shift(-1)) 
+            &
+            (df.high > df.high.shift(2)) 
+            &
+            (df.high >= df.high.shift(-2)) 
+            &
+            (df.high > df.high.shift(3)) 
+            &
+            (df.high >= df.high.shift(-3)) 
+            &
+            (df.high > df.high.shift(4)) 
+            &
+            (df.high >= df.high.shift(-4)) 
+            # &
+            # (df.high > df.high.shift(5)) 
+            # &
+            # (df.high >= df.high.shift(-5))
+            ].index 
+    df.loc[start_downs, 'down_peak']= 'start_down'
+    
+    start_ups = df[
+            (df.low < df.low.shift(1)) 
+            &
+            (df.low <= df.low.shift(-1)) 
+            &
+            (df.low < df.low.shift(2)) 
+            &
+            (df.low <= df.low.shift(-2)) 
+            &
+            (df.low < df.low.shift(3)) 
+            &
+            (df.low <= df.low.shift(-3)) 
+            &
+            (df.low < df.low.shift(4)) 
+            &
+            (df.low <= df.low.shift(-4)) 
+            # &
+            # (df.low < df.low.shift(5)) 
+            # &
+            # (df.low <= df.low.shift(-5))
+            ].index
+    df.loc[start_ups, 'up_peak'] = 'start_up'
+
+    # Now add some shift values to find bigger swings for the thrust end peaks
+    end_ups = df[
+            (df.high > df.high.shift(1)) 
+            &
+            (df.high >= df.high.shift(-1)) 
+            &
+            (df.high > df.high.shift(2)) 
+            &
+            (df.high >= df.high.shift(-2)) 
+            &
+            (df.high > df.high.shift(3)) 
+            &
+            (df.high >= df.high.shift(-3)) 
+            &
+            (df.high > df.high.shift(4)) 
+            &
+            (df.high >= df.high.shift(-4)) 
+            &
+            (df.high > df.high.shift(5)) 
+            &
+            (df.high >= df.high.shift(-5)) 
+            &
+            (df.high > df.high.shift(6)) 
+            &
+            (df.high >= df.high.shift(-6)) 
+            # &
+            # (df.high > df.high.shift(7)) 
+            # &
+            # (df.high >= df.high.shift(-8)) 
+            ].index
+    df.loc[end_ups, 'up_peak'] = 'end_up'
+    
+    end_downs = df[
+            (df.low < df.low.shift(1)) 
+            &
+            (df.low <= df.low.shift(-1)) 
+            &
+            (df.low < df.low.shift(2)) 
+            &
+            (df.low <= df.low.shift(-2)) 
+            &
+            (df.low < df.low.shift(3)) 
+            &
+            (df.low <= df.low.shift(-3)) 
+            &
+            (df.low < df.low.shift(4)) 
+            &
+            (df.low <= df.low.shift(-4)) 
+            &
+            (df.low < df.low.shift(5)) 
+            &
+            (df.low <= df.low.shift(-5)) 
+            &
+            (df.low < df.low.shift(6)) 
+            &
+            (df.low <= df.low.shift(-6)) 
+            &
+            (df.low < df.low.shift(7)) 
+            &
+            (df.low <= df.low.shift(-7)) 
+            # &
+            # (df.low < df.low.shift(8)) 
+            # &
+            # (df.low <= df.low.shift(-8)) 
+            ].index
+    df.loc[end_downs, 'down_peak'] = 'end_down'
+
 
 def set_ema(df):
     df['ema_7'] = df.hlc3.ewm(span=7,adjust=False).mean()
@@ -191,13 +448,515 @@ def auction_vol(df):
             ]
     df.loc[temp.index, 'auction_vol'] = 2 # two bars with less volume
 
+
+def find_thrusts(df: pd.DataFrame, roll_window:int = 5) -> None:
+    ''' Identify periods where there has been an impulsive price move,
+    either up or down, and locate both the start and end of that move.'''
+
+    # I need separate thrust cols so that a single peak can be both a 
+    # "end up" and a "start down"
+    df['thrust_up'] = np.nan
+    df['thrust_down'] = np.nan
+    
+    # First I need to find where a rolling diff is above/below some threshold
+    up_thresh = df.close.diff().rolling(roll_window).mean().describe([.9])['90%']
+    down_thresh = df.close.diff().rolling(roll_window).mean().describe([.1])['10%'] 
+    up_thrusts = df[df.close.diff().rolling(roll_window).mean() >= up_thresh].index
+    down_thrusts = df[df.close.diff().rolling(roll_window).mean() <= down_thresh].index
+    df.loc[up_thrusts, 'thrust_up'] = 'up'       
+    df.loc[down_thrusts, 'thrust_down'] = 'down'    
+
+    # Now locate the actual start and end points of those thrust periods by looking
+    # for nearby peaks.  For a down thrust, the start peak will be some number of
+    # rows prior to the thrust occuring. The end peak could occur somewhere in
+    # the thrust period or afterwards. If no low peak exists I'll default to lowest low.
+
+    up_starts = df.thrust_up[
+            (df.up_peak == 'start_up')
+            &
+            (
+                (df.thrust_up == 'up') 
+                |
+                (df.thrust_up.shift(-1) == 'up') # look forwards for the thrust
+                |
+                (df.thrust_up.shift(-2) == 'up') 
+                |
+                (df.thrust_up.shift(-3) == 'up') 
+                |
+                (df.thrust_up.shift(-4) == 'up')
+                |
+                (df.thrust_up.shift(-5) == 'up') 
+                |
+                (df.thrust_up.shift(-6) == 'up')
+                |
+                (df.thrust_up.shift(-7) == 'up')
+                |
+                (df.thrust_up.shift(-8) == 'up')
+                |
+                (df.thrust_up.shift(-9) == 'up')
+            )
+            ].index
+    df.loc[up_starts, 'thrust_up'] = 'start'
+
+    # Find the end will be essentially the same but I'll be looking for the opposite
+    # type of peak, and in the opposite direction time-wise
+
+    up_ends = df[
+            (df.up_peak == 'end_up')
+            &
+            (
+                (df.thrust_up == 'up') 
+                |
+                (df.thrust_up.shift(1) == 'up') # look backwards for the thrust
+                |
+                (df.thrust_up.shift(2) == 'up') 
+                |
+                (df.thrust_up.shift(3) == 'up') 
+                |
+                (df.thrust_up.shift(4) == 'up')
+                |
+                (df.thrust_up.shift(5) == 'up') 
+                |
+                (df.thrust_up.shift(6) == 'up')
+                |
+                (df.thrust_up.shift(7) == 'up')
+                |
+                (df.thrust_up.shift(8) == 'up')
+                |
+                (df.thrust_up.shift(9) == 'up')
+            )
+            ].index
+    df.loc[up_ends, 'thrust_up'] = 'end'
+
+    # Now do the down thrusts
+
+    down_starts = df[
+            (df.down_peak == 'start_down')
+            &
+            (
+                (df.thrust_down == 'down') 
+                |
+                (df.thrust_down.shift(-1) == 'down') 
+                |
+                (df.thrust_down.shift(-2) == 'down') 
+                |
+                (df.thrust_down.shift(-3) == 'down') 
+                |
+                (df.thrust_down.shift(-4) == 'down')
+                |
+                (df.thrust_down.shift(-5) == 'down') 
+                |
+                (df.thrust_down.shift(-6) == 'down')
+                |
+                (df.thrust_down.shift(-7) == 'down')
+                |
+                (df.thrust_down.shift(-8) == 'down') 
+                |
+                (df.thrust_down.shift(-9) == 'down')
+            )
+            ].index
+    df.loc[down_starts, 'thrust_down'] = 'start'
+
+    down_ends = df[
+            (df.down_peak == 'end_down')
+            &
+            (
+                (df.thrust_down == 'down') 
+                |
+                (df.thrust_down.shift(1) == 'down') 
+                |
+                (df.thrust_down.shift(2) == 'down') 
+                |
+                (df.thrust_down.shift(3) == 'down') 
+                |
+                (df.thrust_down.shift(4) == 'down')
+                |
+                (df.thrust_down.shift(5) == 'down') 
+                |
+                (df.thrust_down.shift(6) == 'down')
+                |
+                (df.thrust_down.shift(7) == 'down')
+                |
+                (df.thrust_down.shift(8) == 'down') 
+                |
+                (df.thrust_down.shift(9) == 'down')
+            )
+            ].index            
+    df.loc[down_ends, 'thrust_down'] = 'end'
+
+def find_brl_levels(df: pd.DataFrame, lookback) -> None:
+    ''' This will locate SR levels where a fast and fairly large price
+    movement has happened well beyond a previous peak. The row which 
+    the BRL data will get saved to will be a thrust's "end", this will 
+    make backtesting safe as the level will only appear after the 
+    thrust which validated it.
+    Note: atr() and find_thrusts() needs to be called first.''' 
+
+    # I need to identify each unique thrust by getting start and end points,
+    # then get the 50% level between those prices and use that to then find
+    # peaks which have occured in the recent past, on a certain side of that 50%
+
+    df['thrust_50'] = np.nan
+    df['brl_buy1_idx_loc'] = np.nan
+    df['brl_buy1_idx_end'] = np.nan
+    df['brl_buy2_idx_loc'] = np.nan
+    df['brl_buy2_idx_end'] = np.nan
+    df['brl_sell1_idx_loc'] = np.nan
+    df['brl_sell1_idx_end'] = np.nan
+    df['brl_sell2_idx_loc'] = np.nan
+    df['brl_sell2_idx_end'] = np.nan
+    up_end_idxs = df[df.thrust_up == 'end'].index
+    down_end_idxs = df[df.thrust_down == 'end'].index
+
+    #   -- FIND 50% PRICES --
+
+    # Iter thru the ends to find the nearest previous "start." Using the high
+    # and low of those indexes, split the difference to find the 50% level.
+    for end_idx in up_end_idxs:
+        start_idx = df[
+                    (df.thrust_up == 'start')
+                    &
+                    (df.index < end_idx)
+                    ].index.max()
+
+        # Set the mid price between start and end
+        # If no start was found because you're at the df bounds, just skip it
+        if pd.isnull(start_idx):
+            continue
+        df.loc[end_idx, 'thrust_50'] = df.loc[end_idx, 'high'] - (df.loc[end_idx, 'high'] - df.loc[start_idx, 'low']) / 2
+
+        #   -- FIND MAXIMIUM LOOK BACK --
+
+        # The price range in which BRLs will be searched for is between the start of a thrust
+        # and the 50% level. Now I also need to get the time range to know how much historical data to scan
+
+        atr_high_to_50 = (df.loc[end_idx, 'high'] - df.loc[end_idx, 'thrust_50']) / df.loc[end_idx, 'atr']
+        historical_limit = round(abs(atr_high_to_50) * lookback)
+        historical_limit *=  df.index[1] - df.index[0]  # historical limit converted to num rows
+        # Now find a peak (BRL) that exists between the start 'price' and 50, 
+        # and start 'time' and historical_limit
+        brl_index = df[
+                    ((df.down_peak == 'start_down')               # BRL peak type
+                    |              
+                    (df.up_peak == 'end_up'))
+                    &
+                    (df.high < df.loc[end_idx, 'thrust_50'])    # price < than 50 price
+                    &
+                    (df.high > df.loc[start_idx, 'low'])        # price > than thrust start
+                    &
+                    (df.index < start_idx)                      # exists before thrust start
+                    &
+                    (df.index > start_idx - historical_limit)   # exists after historical limit      
+                    ].index
+                    
+        #   -- SET BRLs --
+
+        # Limit the amount found to the most recent 2. If more than 1 is found, 
+        # very the older one sticks out abov the newer one
+        df.loc[end_idx, 'brl_buy1_idx_loc'] = brl_index[-1] if len(brl_index) > 0 else np.nan
+        if len(brl_index) > 1:
+            # Compare highs
+            if df.loc[brl_index[-2], 'high'] > df.loc[brl_index[-1], 'high']:
+                df.loc[end_idx, 'brl_buy2_idx_loc'] = brl_index[-2]
+
+    #   -- SET TERMINATION POINTS  -- 
+
+    # The last thing to do is to find the termination points of a BRL. Once price
+    # has pierced a level by some amount I will want that level to become inactive.
+    # Price needs to not only pierce by some amount but also for multiple candles
+    for i in df[df.brl_buy1_idx_loc.notna()].index:
+        brl1_idx = df.loc[i, 'brl_buy1_idx_loc']  # This is the index of the actual brl
+        index_loc = df[
+                    (df.close < (df.loc[brl1_idx, 'high'] - df.loc[i, 'atr'] * 1.5))
+                    &
+                    (df.index > i)
+                    ].index
+        df.loc[i, 'brl_buy1_idx_end'] = index_loc[2] if len(index_loc) > 3 else df.index.max()
+        # I set index_loc to 2 so that visual plots will be accurate with what happened live
+    
+    for i in df[df.brl_buy2_idx_loc.notna()].index:
+        brl2_idx = df.loc[i, 'brl_buy2_idx_loc']  
+        index_loc = df[
+                    (df.close < (df.loc[brl2_idx, 'high'] - df.loc[i, 'atr'] * 1.5))
+                    &
+                    (df.index > i)
+                    ].index
+        df.loc[i, 'brl_buy2_idx_end'] = index_loc[2] if len(index_loc) > 3 else df.index.max()
+    
+    
+    # Now all the same thing but for the lows
+    
+    #   -- FIND 50% PRICES --
+    
+    for end_idx in down_end_idxs:
+        start_idx = df[
+                    (df.thrust_down == 'start')
+                    &
+                    (df.index < end_idx)
+                    ].index.max()
+
+        if pd.isnull(start_idx):
+            continue
+        df.loc[end_idx, 'thrust_50'] = df.loc[start_idx, 'high'] - (df.loc[start_idx, 'high'] - df.loc[end_idx, 'low']) / 2
+
+        #   -- FIND MAXIMIUM LOOK BACK --
+        
+        atr_high_to_50 = (df.loc[start_idx, 'high'] - df.loc[end_idx, 'thrust_50']) / df.loc[end_idx, 'atr']
+        historical_limit = round(abs(atr_high_to_50) * lookback)
+        historical_limit *=  df.index[1] - df.index[0]  # historical limit converted to num rows
+        
+        brl_index = df[
+                ((df.down_peak == 'end_down')               # BRL peak type
+                |              
+                (df.up_peak == 'start_up'))
+                &
+                (df.low > df.loc[end_idx, 'thrust_50'])    # price > than 50 price
+                &
+                (df.low < df.loc[start_idx, 'high'])        # price < than thrust start
+                &
+                (df.index < start_idx)                      # exists before thrust start
+                &
+                (df.index > start_idx - historical_limit)   # exists after historical limit      
+                ].index
+                    
+        #   -- SET BRLs --
+
+        df.loc[end_idx, 'brl_sell1_idx_loc'] = brl_index[-1] if len(brl_index) > 0 else np.nan
+        if len(brl_index) > 1:
+            if df.loc[brl_index[-2], 'low'] < df.loc[brl_index[-1], 'low']:
+                df.loc[end_idx, 'brl_sell2_idx_loc'] = brl_index[-2]
+    
+    #   -- SET TERMINATION POINTS  -- 
+
+    for i in df[df.brl_sell1_idx_loc.notna()].index:
+        brl1_idx = df.loc[i, 'brl_sell1_idx_loc']  # This is the index of the actual brl
+        index_loc = df[
+                    (df.close > (df.loc[brl1_idx, 'low'] + df.loc[i, 'atr'] * 1.5))
+                    &
+                    (df.index > i)
+                    ].index
+        df.loc[i, 'brl_sell1_idx_end'] = index_loc[2] if len(index_loc) > 3 else df.index.max()
+    
+    for i in df[df.brl_sell2_idx_loc.notna()].index:
+        brl2_idx = df.loc[i, 'brl_sell2_idx_loc']  # This is the index of the actual brl
+        index_loc = df[
+                    (df.close > (df.loc[brl2_idx, 'low'] + df.loc[i, 'atr'] * 1.5))
+                    &
+                    (df.index > i)
+                    ].index
+        df.loc[i, 'brl_sell2_idx_end'] = index_loc[2] if len(index_loc) > 3 else df.index.max()
+    
+    #   -- HOUSEKEEPING --
+    # this shiz no work
+    
+    # In any BRL 'zone' I want the BRL lines to not pierce sequential BRL peaks, so the 
+    # older BRL must be higher than the newer. To keep it simple, I'll just delete any
+    # older BRL whose high is lower than the newer
+    # rows = df.index[1] - df.index[0]
+    # for i in df.brl_buy1_idx_loc[df.brl_buy1_idx_loc.notna()]:
+    #     print('runnin 1s at', i)
+    #     view = df[i + 1 * rows : i + 12 * rows]
+    #     # print(i)
+    #     # print(view)
+    #     # print('\n')
+    #     more_recent_brl1_idx = view.brl_buy1_idx_loc[view.brl_buy1_idx_loc.notna()].values.tolist()
+    #     more_recent_brl2_idx = view.brl_buy2_idx_loc[view.brl_buy2_idx_loc.notna()].values.tolist()
+    #     # Iter thru any occurences and compare highs
+    #     # print('more_recent_brl1_idx')
+    #     # print(more_recent_brl1_idx)
+    #     # print(more_recent_brl2_idx)
+    #     # print('more_recent_brl2_idx')
+    #     # print('\n')
+    #     for j in more_recent_brl1_idx + more_recent_brl2_idx:
+    #         # print('in j')
+    #         # print('i', i, 'high', df.loc[i, 'high'])
+    #         # print('j', j, 'high', df.loc[j, 'high'])
+    #         if df.loc[i, 'high'] < df.loc[j, 'high']:
+    #             print('nanning that 1 at', i)
+    #             df.loc[i, 'brl_buy1_idx_loc'] = np.nan
+    #             df.loc[i, 'brl_buy1_idx_end'] = np.nan
+    #             df.loc[i, 'brl_buy2_idx_loc'] = np.nan
+    #             df.loc[i, 'brl_buy2_idx_end'] = np.nan
+
+    # for i in df.brl_buy2_idx_loc[df.brl_buy2_idx_loc.notna()]:
+    #     print('runnin 2s at', i)
+    #     view = df[i + 1 * rows : i + 12 * rows]
+    #     more_recent_brl1_idx = view.brl_buy1_idx_loc[view.brl_buy1_idx_loc.notna()].values.tolist()
+    #     more_recent_brl2_idx = view.brl_buy2_idx_loc[view.brl_buy2_idx_loc.notna()].values.tolist()
+    #     # Iter thru any occurences and compare highs
+    #     # print('more_recent_brl1_idx')
+    #     # print(len(more_recent_brl1_idx))
+    #     # print(len(more_recent_brl2_idx))
+    #     # print('more_recent_brl2_idx')
+    #     for j in more_recent_brl1_idx + more_recent_brl2_idx:
+    #         if df.loc[i, 'high'] < df.loc[j, 'high']:
+    #             print('nanning that 2 at', i)
+    #             df.loc[i, 'brl_buy1_idx_loc'] = np.nan
+    #             df.loc[i, 'brl_buy1_idx_end'] = np.nan
+    #             df.loc[i, 'brl_buy2_idx_loc'] = np.nan
+    #             df.loc[i, 'brl_buy2_idx_end'] = np.nan
+    
+
+    # Now all the same but for the down thrusts
+        
+    # for end_idx in down_end_idxs:
+    #     start_idx = df[
+    #                 (df.thrust_down == 'start')
+    #                 &
+    #                 (df.index < end_idx)
+    #                 ].index.max()
+
+    #     df.loc[end_idx, 'thrust_down'] = np.nan if pd.isnull(start_idx) else 'end'
+    #     df.loc[end_idx, 'thrust_50'] = df.loc[start_idx, 'high'] - (df.loc[start_idx, 'high'] - df.loc[end_idx, 'low']) / 2
+
+    # for start in down_starts:
+
+    #     price_diff = (df.loc[start, 'high'] - df.loc[start, 'thrust_50']) / df.loc[start, 'atr']
+    #     historical_limit = round(abs(price_diff) * lookback)  # <<< this nearly always rounds to either 0, 1 or 2
+    #     rows = df.index[1] - df.index[0]
+    #     historical_limit *= rows
+        
+    #     index_loc = df[
+    #             (df.up_peak == 'start_low')
+    #             &
+    #             (df.low >= df.loc[start, 'thrust_50'])
+    #             &
+    #             (df.low < df.loc[start, 'high'])
+    #             &
+    #             (df.index < start)
+    #             &
+    #             (df.index > start - historical_limit)
+    #             ] = df.index.max()
+    #     df.loc[start, 'brl_sell'] = index_loc
+
+    # # K now reset the end points of each BRL to the row in which price has
+    # # pierced them by some amount
+    # for i in df[df.brl_buy.notna()].index:
+    #     index_loc = df[
+    #                 (df.close < (df.loc[i, 'high'] - df.loc[i, 'atr'] * 1.5))
+    #                 &
+    #                 (df.index > df[ # find the first "end" occuring after the BRL
+    #                                 (df.thrust_up == 'end')
+    #                                 &
+    #                                 (df.index > i)
+    #                                 ].index.min())
+    #                 ].index.min()
+    #     df.loc[i, 'brl_buy'] = index_loc
+
+    # for i in df[df.brl_sell.notna()].index:
+    #     index_loc = df[
+    #                 (df.close > (df.loc[i, 'low'] + df.loc[i, 'atr'] * 1.5))
+    #                 &
+    #                 (df.index > df[
+    #                                 (df.thrust_down == 'end')
+    #                                 &
+    #                                 (df.index > i)
+    #                                 ].index.min())
+    #                 ].index.min()
+    #     df.loc[i, 'brl_sell'] = index_loc
+    ''' i need to have info about the thrust, but since i set the brl's on their own I dont know
+    which rows thurst end I need to look for. I may need to create a df copy to keep all this data
+    in different columns on the same row as start that way I can access and params easily'''
+
+
+# test
+# df = mt5_ohlc_request('audcad','M15', num_candles=650)  # << broke on this one suddenly
+df = mt5_ohlc_request('eurusd','M5', num_candles=650)
+atr(df)
+find_simple_peaks(df)
+find_thrusts(df)
+find_brl_levels(df, 15)
+
+print(df[(df.brl_buy2_idx_loc.notna()) | (df.brl_sell2_idx_loc.notna())])
+
+import mplfinance as mpf
+
+buy_lines = []
+sell_lines = []
+# print(len(df[df.brl_buy.notna()])) | (df.brl_buy2_idx.notna())])
+for i in df[df.brl_buy1_idx_loc.notna()].index:
+    # The brl data is at the index of a thrust "end." However, the data which those 
+    # rows hold are the index locations pointing to where the actual BRL happened
+    # so to get that plot price I need to....
+    brl_loc = df.loc[i, 'brl_buy1_idx_loc']
+    price = df.loc[brl_loc, 'high']
+
+    # buy_lines is the line that will plot
+    buy_lines.append([(i, price), (df.loc[i, 'brl_buy1_idx_end'], price)]) 
+    # this is the actual BRL peak
+    df.loc[brl_loc, 'brls_buy_peak'] = df.loc[brl_loc, 'high']
+
+for i in df[df.brl_buy2_idx_loc.notna()].index:
+    brl_loc = df.loc[i, 'brl_buy2_idx_loc']
+    price = df.loc[brl_loc, 'high']
+    buy_lines.append([(i, price), (df.loc[i, 'brl_buy2_idx_end'], price)]) 
+    df.loc[brl_loc, 'brls_buy_peak'] = df.loc[brl_loc, 'high']
+
+for i in df[df.brl_sell1_idx_loc.notna()].index:
+    brl_loc = df.loc[i, 'brl_sell1_idx_loc']
+    price = df.loc[brl_loc, 'low']
+    sell_lines.append([(i, price), (df.loc[i, 'brl_sell1_idx_end'], price)]) 
+    df.loc[brl_loc, 'brls_sell_peak'] = df.loc[brl_loc, 'low']
+for i in df[df.brl_sell2_idx_loc.notna()].index:
+    brl_loc = df.loc[i, 'brl_sell2_idx_loc']
+    price = df.loc[brl_loc, 'low']
+    sell_lines.append([(i, price), (df.loc[i, 'brl_sell2_idx_end'], price)]) 
+    df.loc[brl_loc, 'brls_sell_peak'] = df.loc[brl_loc, 'low']
+
+# for i in df[df.brl_sell.notna()].index:
+#     sell_lines.append([(i, df.loc[i, 'low']), (df.loc[i, 'brl_sell'], df.loc[i, 'low'])])  
+#     buy_lines.append([(i, df.loc[i, 'low']), (df.loc[i, 'brl_sell'], df.loc[i, 'low'])])  
+
+#  
+# df['brls_s'] = df.low[df.brl_sell.notna()]
+
+df['up_start'] = df.low[df.thrust_up == 'start']
+df['up_end'] = df.high[df.thrust_up == 'end']
+df['up'] = df.close[df.thrust_up == 'up']
+
+df['down_start'] = df.high[df.thrust_down == 'start']
+df['down_end'] = df.low[df.thrust_down == 'end']
+df['down'] = df.close[df.thrust_down == 'down']
+
+# df['start_low'] = df.high[df.up_peak == 'start_low']
+# df['start_low'] = df.high[df.up_peak == 'start_low']
+plots = [
+        mpf.make_addplot(df['brls_buy_peak'],type='scatter',color='g'),
+        mpf.make_addplot(df['brls_sell_peak'],type='scatter',color='r'),
+        # mpf.make_addplot(df['brls_s'],type='scatter',color='r'),
+        # mpf.make_addplot(df['up_start'],type='scatter',color='b', marker='^'),
+        # mpf.make_addplot(df['up_end'],type='scatter',color='b', marker='v'),
+        # mpf.make_addplot(df['up'],type='scatter',color='b'),
+
+        # mpf.make_addplot(df['down_start'],type='scatter',color='r', marker='v'),
+        # mpf.make_addplot(df['down_end'],type='scatter',color='r', marker='^'),
+        # mpf.make_addplot(df['down'],type='scatter',color='r'),
+]
+
+# make colors
+c = ['g' for _ in range(len(buy_lines))]
+sellc = ['r' for _ in range(len(sell_lines))]
+c += sellc
+mpf.plot(df, type='candle', tight_layout=True, 
+        show_nontrading=False, volume=False,
+        addplot=plots,
+        alines=buy_lines + sell_lines,
+        # alines=dict(buy_lines, colors=c)
+)
+        # savefig=f'{symbol}_{timeframe}.png')
+# print(df.head(40))
+quit()
+
+
+
+
 def save_trade_info(df, i):
     '''
     Save the trade info to the df
     '''
     cur_atr = df.loc[i, 'atr']
-    sl_r = 2
-    tp1_r = 1.5
+    sl_r = 2.5
+    tp1_r = 2.5
     tp2_r = 4
     entry_mult = 0.2
 
@@ -228,7 +987,6 @@ def save_trade_info(df, i):
         df.loc[i, 'sl'] = sl
         df.loc[i, 'tp1'] = tp1
         df.loc[i, 'tp2'] = tp2
-
 
 
 #### TRADE SETUPS ######
@@ -372,17 +1130,15 @@ def stoprun_s(df):
                                 save_trade_info(df, i)
 
 
-def trade_scanner(timeframe, bot=bot):
+def _trade_scanner(timeframe, bot=bot):
     ''' Read the database for the current timeframe. This function gets
     called within a loop so only a single timeframe will be passed. '''
 
     forecast_df = pd.read_sql('SELECT * FROM outlook', econ_con)
 
     
-    b = []
-    b.extend(mt5_symbols['majors'])
-    b.extend(mt5_symbols['others'])
-    for symbol in b:
+    symbols = mt5_symbols['majors'] + mt5_symbols['others']
+    for symbol in symbols:
 
         # Verify there's an upcoming forecast and see what the score is
         base = symbol[:3]

@@ -3,20 +3,23 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import time
+import concurrent.futures
+from tqdm import tqdm
 import pathlib
 import sqlite3
-import mplfinance as mpf
-from symbols_lists import mt5_symbols, fin_symbols, spreads
-from ohlc_request import mt5_ohlc_request, _read_last_datetime
+from symbols_lists import mt5_symbols, fin_symbols, spreads, trading_symbols, mt5_timeframes
+# from ohlc_request import mt5_ohlc_request, finnhub_ohlc_request, _read_last_datetime
 from create_db import ohlc_db, correlation_db
-from tokens import mt5_login, mt5_pass
- 
+from tokens import mt5_login, mt5_pass, bot, mt5_server
+
+
 '''
 I want to have multi TF correlation values but I can't use HTFs like D1
 when Im filling a historical db. If I did I'd end up with choppy value
 lines since I'd only get a single D1 value per day.  So to emulate real historical 
 data Im going to use M5 candles but multiply all applicable values (correlation period,
 look backs).  
+
 The symbols I scan for correlation have various market open hours.  In order to normalize 
 the correlation values between markets that have different hours than the FX pairs, I first
 scan for corr using only the rows where each market is open.  However, ultimately I want to
@@ -26,56 +29,86 @@ choppiness in that line.  So after the correlation values are found, I reindex t
 to add in the overnight session and I just do a 'ffill' on the nans. 
 '''
 
-# How much historical data you want 
-# 51840  # 160 days
-# HIST_CANDLES = 51840  # 160 days
-HIST_CANDLES = 1840  
+# this stuff cant be imported because ultimately the gspread api gets called and gives me a timeout error
+# from all the processes/threads
+def _format_mt5_data(df):
+    
+    try:
+        df = df.rename(columns={'time': 'datetime', 'tick_volume': 'volume'})
+        df.datetime = pd.to_datetime(df.datetime, unit='s')
+        df.datetime = df.datetime - pd.Timedelta('8 hours')
+        df.index = df.datetime
+        df = df[['open', 'high', 'low', 'close', 'volume']]
+    except:
+        print('Failed to format the dataframe:')
+        print(df)
+
+    return df
+
+def mt5_ohlc_request(symbol, timeframe, num_candles=70):
+    ''' Get a formatted df from MT5 '''
+
+    # If a period tag (like '_MTF') is passed, drop that
+    if any(period in symbol for period in ['_LTF', '_MTF', '_HTF']):
+        print(f'mt5_ohlc_request(): {symbol} -> {symbol[:6]}')
+        symbol = symbol[:6]
+    # A request to MT5 can occasionally fail. Retry a few times to connect 
+    # and a few more times to receive data
+    for _ in range(2):
+        if mt5.initialize(login=mt5_login, server=mt5_server,password=mt5_pass):
+            
+            for _ in range(5):
+                rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)  
+                if rates is not None:
+                    if len(rates) > 0:
+                        df = pd.DataFrame(rates)
+                        df = _format_mt5_data(df)
+                        return df
+
+            print(f'\n ~~~ Request to MT5 failed. [{symbol} {timeframe}] ~~~')
+            return
+        
+        # If init failed pause before retry
+        time.sleep(0.1)
+
+    print("MT5 initialize() failed, error code =", mt5.last_error())
+
+
 
 # Settings for each time horizon 
-settings = {
-    # 'LTF': {
-    #     'CORR_PERIOD': 1440,  # 5 days
-    #     'MIN_CORR': 0.7,
-    # },
-    'MTF': {
-        'CORR_PERIOD': 5760,  # 20 days
-        'MIN_CORR': 0.65,
-    },
+windows = {
     'HTF': {
-        'CORR_PERIOD': 17280,  # 60 days
-        'MIN_CORR': 0.60,
+        'COR_PERIOD': 17280,  # 60 days
+        'MIN_COR': 0.60,
     },
+    # 'LTF': {
+    #     'COR_PERIOD': 1440,  # 5 days
+    #     'MIN_COR': 0.65,
+    # }, 
+    # 'MTF': {
+    #     'COR_PERIOD': 5760,  # 20 days
+    #     'MIN_COR': 0.65,
+    # },
 }
 
-shift_periods = [0, 10, 50, 150, 300, 500, 750]
+SHIFT_PERIODS = [0, 10, 50, 150, 300, 500, 700]
 
 # This needs to be changed to the ubuntu laptop path
 OHLC_CON = sqlite3.connect(ohlc_db)
-CORR_CON = sqlite3.connect(r'C:\Users\ru\forex\db\correlation.db')
- 
-# Make a single list of all the symbols used for leading correlation
-cor_symbols = mt5_symbols['others'] + spreads   
-# cor_symbols.extend(fin_symbols)
+COR_CON = sqlite3.connect(correlation_db)
 
-def _get_data(key_symbol, symbol, tf, corr_period, hist_fill=True, spread=None):
+# Path where final parquet files will get saved
+p = r'C:\Users\ru\forex\db\correlation'
 
-    # If this is a historical overwrite
-    if hist_fill == True:
-        candle_count = HIST_CANDLES
+def _normalize(s: pd.Series) -> pd.Series:
+    ''' Normalize a series '''
+    
+    assert isinstance(s, pd.Series), '_normalize() needs a Series'
+    return (s - min(s)) / (max(s) - min(s))
 
-    else:
-        # First figure out how much data is needed by getting the last correlation timestamp
-        try:
-            start = _read_last_datetime(f'{key_symbol}_{tf}', CORR_CON)
-            minutes_diff = (pd.Timestamp.now() - start).total_seconds() / 60.0
-            
-            # How many 5 minute periods exist in that range
-            candle_count = minutes_diff // 5
-            candle_count = corr_period + int(candle_count)
-        except Exception:
-            # If that table didn't exists in the db do a hisorical fill
-            candle_count = HIST_CANDLES
-            
+def _get_data(symbol, hist_candles, timeframe=mt5_timeframes['M5'], spread=None) -> pd.Series:
+    ''' Request the data. Right now its only coming from MT5. '''
+
     if not mt5.initialize(login=mt5_login, server="ICMarkets-Demo",password=mt5_pass):
         print("initialize() failed, error code =", mt5.last_error())
         quit()
@@ -86,166 +119,226 @@ def _get_data(key_symbol, symbol, tf, corr_period, hist_fill=True, spread=None):
 
     # mt5 request
     if symbol in mt5_symbols['others'] or symbol in mt5_symbols['majors']:
-        df = mt5_ohlc_request(symbol, mt5.TIMEFRAME_M5, num_candles=candle_count)
+        df = mt5_ohlc_request(symbol, timeframe, num_candles=hist_candles)
 
-    elif symbol in fin_symbols:
-        df = pd.read_sql(f'SELECT * FROM {symbol}', OHLC_CON, parse_dates=False)
-        df = df.set_index(df.datetime, drop=True)
-        df.index = pd.to_datetime(df.index)
+    # Close is all thats needed
+    return (symbol, df.close)
 
-    return df
-
-def _normalize(df:pd.DataFrame, *columns:str) -> pd.DataFrame:
-    ''' normalize the specified columns within a dataframe '''
+def _make_db(hist_candles):
+    ''' I'll be making so many repeated disk reads that it makes sense to
+    read it all into memory once '''
     
-    for col in columns:
-        df[col] = (df[col] - min(df[col])) / (max(df[col]) - min(df[col]))
+    # Get unique symbol values from spreads
+    split_spreads = []
+    for s in spreads:
+        split_spreads.append(s.split('_')[0])
+        split_spreads.append(s.split('_')[1])
 
-    return df
+    all_symbols = mt5_symbols['majors'] + mt5_symbols['others'] + split_spreads
+    all_symbols = set(all_symbols)
 
-def _make_spread(symbol, tf, corr_period, hist_fill, spread=None):
-    ''' These are all currently coming from MT5 so I will wrap a few
-    steps into one function here: get data, normalize, combine.'''
+    # Create a future for each symbol and save the data to a dict
+    # where the key is the symbol name and the value is a Series of close prices
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        
+        futures = [] 
+        for symbol in all_symbols:
+            futures.append(executor.submit(_get_data, symbol=symbol, hist_candles=hist_candles))
+        db = {} 
+        for future in concurrent.futures.as_completed(futures):
+            some_tuple = future.result()
+            symbol = some_tuple[0]
+            data = some_tuple[1]
+            db[symbol] = data
 
-    # first parse spread
+        # Verify all data was retrieved
+        if len(db) < len(all_symbols):
+            print(' ~~~ you got 99 problems + data request issues')
+            print(f' ~~~ missing {set(db.keys()) ^ all_symbols}') # (a | b) - (a & b), the union of both sets minus the intersection
+    
+    return db
+
+def _make_spread(spread, db):
+    ''' Normalize, combine.'''
+    
+    # First parse spread
     symbol_1 = spread.split('_')[0]
     symbol_2 = spread.split('_')[1]
-
-    try: 
-        symbol_1 = _get_data(symbol, tf, corr_period, hist_fill, spread=symbol_1)
-        symbol_2 = _get_data(symbol, tf, corr_period, hist_fill, spread=symbol_2)
-    except:
-        print(f'failed to get data for {symbol_1} or {symbol_2}')
-        quit()
-    # normalize both close columns
-    symbol_1.close = (symbol_1.close - min(symbol_1.close)) / (max(symbol_1.close) - min(symbol_1.close))
-    symbol_2.close = (symbol_2.close - min(symbol_2.close)) / (max(symbol_2.close) - min(symbol_2.close))
     
-    spread_df = pd.DataFrame()
-    spread_df['close'] = symbol_1.close - symbol_2.close    
+    # Normalize both 
+    symbol_1 = _normalize(db[symbol_1])
+    symbol_2 = _normalize(db[symbol_2])
 
-    return spread_df
+    # Align lengths to match the df with least data
+    symbol_1 = symbol_1[symbol_1.index.isin(symbol_2.index)]
+    symbol_2 = symbol_2[symbol_2.index.isin(symbol_1.index)]
+    
+    spread = symbol_1 - symbol_2  
 
-def _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift, final_df):
+    return spread
+
+def _save_result_to_df(cor_rows, overnight, cor_symbol, shift):
     ''' Save close prices and corr value for any correlated pair found before continuing to the next symbol. '''
+    
+    cor_data = pd.DataFrame(index=cor_rows)
+    cor_data.loc[cor_rows, f'{cor_symbol}'] = overnight.loc[cor_rows, 'cor_close']
+    cor_data.loc[cor_rows, f'{cor_symbol}_cor'] = round(overnight.loc[cor_rows, 'cor'], 3)
+    cor_data.loc[cor_rows, f'{cor_symbol}_shift'] = shift
 
-    final_df.loc[cor_rows, f'*{key_symbol}*'] = overnight.loc[cor_rows, 'close']
-    final_df.loc[cor_rows, f'{cor_symbol}'] = overnight.loc[cor_rows, 'cor_close']
-    final_df.loc[cor_rows, f'{cor_symbol}_corr'] = round(overnight.loc[cor_rows, 'cor'], 3)
-    final_df.loc[cor_rows, f'{cor_symbol}_shift'] = shift
+    return cor_data
 
-    return final_df
+def _find_correlation(trading_symbol: str, cor_symbol: str, db: dict, cor_period: int, min_cor: int) -> pd.DataFrame:
+    ''' Create a df with the close prices of the key symbol and cor
+    symbol.  Look for correlation above a certain threshold over a
+    few different shift() amounts '''
 
-def _save_data(key_symbol, tf, final_df):
-    ''' Read db table into memory, append new data to it and save. Otherwise 
-    an existing db table wouldn't accept any new correlation symbol columns '''
+    if cor_symbol in spreads:
+        cor_df = _make_spread(cor_symbol, db)
+    else:
+        cor_df = db[cor_symbol]
+        
+    # Ensure matching df lengths (drop the overnight candles if there are any)
+    key_df = db[trading_symbol][db[trading_symbol].index.isin(cor_df.index)].copy() # to avoid warnings
+    cor_df = cor_df[cor_df.index.isin(key_df.index)]
+    key_df = _normalize(key_df)
+    cor_df = _normalize(cor_df)
+    # looks like its good to here   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    # print(len(cor_df.notna()))
+    # Iter various shifts to find highest cor and save the data to this dict
+    shift_info = {
+        'data': pd.DataFrame(dtype=np.float32),
+        'best_sum': 0,
+        'shift': 0
+    }
 
-    # for stocks
-    try:
-        existing = pd.read_sql(f'SELECT * FROM {key_symbol}_{tf}', CORR_CON)
-        final = existing.append(final_df).drop_duplicates(subset='datetime')
-        final.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
-    except Exception:
-        final_df.to_sql(f'{key_symbol}_{tf}', CORR_CON, if_exists='replace', index=True)
+    for shift_period in SHIFT_PERIODS: 
+        cor_values = key_df.rolling(cor_period).corr(cor_df.shift(shift_period))
+        cor_values = cor_values.dropna()
 
-def find_correlations(historical_fill=False):
-    ''' Find correlation between FX majors and other symbols/spreads
-    over a rolling window. Setting historical_fill as True will overwrite 
-    existing data, False will append '''
+        # Update the shift dict
+        if abs(cor_values).sum() > shift_info['best_sum']:
+            shift_info['data'] = round(cor_values, 3)
+            shift_info['best_sum'] = abs(cor_values).sum()
+            shift_info['shift'] = shift_period
 
+    # If nothing is found jump to the next symbol
+    if len(shift_info['data']) == 0:
+        return
 
-    # The outer loop will iter over the various correlation periods to emulate MTF value
+    # To eliminate choppiness of the value line I plot later, I want to bring
+    # any overnight gaps back in and ffill the nans. I’ll use the original db[trading_symbol] index for this
+    overnight = pd.DataFrame(db[trading_symbol])
+    overnight['cor'] = shift_info['data']
+    overnight['cor_close'] = cor_df
+    overnight = overnight.fillna(method='ffill')
+    overnight = overnight.dropna()
+
+    # I'll keep the normalized close values so that later on I 
+    # can scan the symbols which have the highest cor with the value line
+    overnight.cor_close = _normalize(overnight.cor_close)
+
+    # Get list of rows where correlation is above threshold
+    cor_rows = overnight.cor[abs(overnight.cor) > min_cor].index
+    if not cor_rows.empty:
+        cor_df = _save_result_to_df(cor_rows, overnight, cor_symbol, shift_info['shift'])
+        # cor_df is a df of normalized close prices of the key_symbol and cor_symbol,
+        # as well as the correlation value at any given time and the shift value used.
+        return cor_df
+
+def _cor_scanning_thread_executor(trading_symbol: str, cor_symbols: list, db: dict, cor_period: int, min_cor: int) -> pd.DataFrame:
+    ''' This gets called within the ProcessPoolExecutor. Each trading_symbol has
+    it's own process, and each cor_symbol for that trading_symbol gets its own 
+    thread to calculate the correlation. Once all threads finish, the dataframes
+    are combined into a single df and gets returned as the future within ProcessPoolExecutor. '''
+
+    # Loop thru the comparison symbols
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [] 
+        for cor_symbol in cor_symbols:
+            futures.append(executor.submit(_find_correlation, 
+                                           trading_symbol=trading_symbol, 
+                                           cor_symbol=cor_symbol, 
+                                           db=db, 
+                                           cor_period=cor_period, 
+                                           min_cor=min_cor,
+                                           ))
+
+        cor_db = [] 
+        for f in concurrent.futures.as_completed(futures):
+            try:
+                df = f.result()
+                if df is not None:
+                    cor_db.append(df)
+            except Exception:
+                print(f'A _cor_scanning_thread_executor() thread inside {trading_symbol} failed. OR came back empty!\n')
+                    
+    # Compile a single dataframe from the dfs
+    df = pd.DataFrame()
+    df = df.join(cor_db, how='outer')
+    df[trading_symbol] = _normalize(db[trading_symbol])
+
+    # Move trading_symbol to front 
+    df = df[df.columns[::-1]]
+
+    print(f'{trading_symbol} done. Found {len(df)} periods of correlation.')
+
+    return [trading_symbol, df]  # return the symbol name with the data
+
+def scan_correlations(trading_symbols: list, cor_symbols: list, hist_candles:int = 51840):
+    ''' Find correlation between trading_symbols and cor_symbols
+    over a rolling window.  Threading is used to load all ohlc data into memory.
+    Then each trading_symbol is given its own process, with threading inside each
+    one to handle the requests to the in-mem database. '''
+
+    # Build out a df of all needed data (threaded)
+    print('Assembling in-memory database..!')
+    db = _make_db(hist_candles)
+    print('DB assembled.')
+    # print(db)
+
+    # The outer loop will iter over the various outlook periods to emulate MTF value
     # Each corr period will get saved to its own table in the db
-    for tf in settings:
-        CORR_PERIOD = settings[tf]['CORR_PERIOD']
-        MIN_CORR = settings[tf]['MIN_CORR']
+    for window in windows:
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = [] 
+            for symbol in trading_symbols:
+                futures.append(executor.submit(_cor_scanning_thread_executor, 
+                                               trading_symbol=symbol, 
+                                               cor_symbols=cor_symbols, 
+                                               db=db, 
+                                               cor_period=windows[window]['COR_PERIOD'],
+                                               min_cor=windows[window]['MIN_COR'],
+                                               ))
 
-        # Iter the fx majors
-        length = len(mt5_symbols['majors']) + 1
-        for key_symbol in mt5_symbols['majors']:
-            length -= 1
-            print(f'{tf}: {length} symbols left')
+            # Each future is a list, with the symbol name in position 0 and the data in 1
+            cor_of_all_cor_symbols = {} 
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    data = future.result()
+                    if data[1] is not None:
+                        cor_of_all_cor_symbols[data[0]] = data[1]  # name and df
 
-            # Get the data
-            key_df = _get_data(key_symbol, key_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
+                except Exception:
+                    print('A process failed... thats all I know')
+        # Save
+        for name, df in cor_of_all_cor_symbols.items():
+            df.to_parquet(pathlib.Path(p, f'{name}_{window}.parquet'), index=True)
 
-            # Now iter thru the comparison symbols, saving corr  ata to final_df
-            final_df = pd.DataFrame(index=key_df.index)
-            for cor_symbol in cor_symbols:
-
-                # if key_symbol == cor_symbol:
-                #     continue
-
-                if cor_symbol in spreads:
-                    cor_df = _make_spread(key_symbol, tf, CORR_PERIOD, hist_fill=historical_fill, spread=cor_symbol)
-
-                elif cor_symbol in mt5_symbols['others']:
-                    cor_df = _get_data(key_symbol, cor_symbol, tf, CORR_PERIOD, hist_fill=historical_fill)
-
-                # Ensure matching df lengths (drop the overnight periods if there are any)
-                temp_key_df = key_df[key_df.index.isin(cor_df.index)].copy() # to avoid warnings
-                cor_df = cor_df[cor_df.index.isin(temp_key_df.index)].copy()
-
-                temp_key_df = _normalize(temp_key_df, 'close')
-                cor_df = _normalize(cor_df, 'close')
-
-                # Iter various shifts to find highest cor and save the data to this dict
-                shift_val = {
-                    'data': pd.DataFrame(dtype=np.float32),
-                    'best_sum': 0,
-                    'shift': 0
-                }
-                for shift in shift_periods:
-                    cor_values = temp_key_df.close.rolling(CORR_PERIOD).corr(cor_df.close.shift(shift))
-                    cor_values = cor_values.dropna()
-
-                    # Update the shift dict
-                    if abs(cor_values).sum() > shift_val['best_sum']:
-                        shift_val['best_sum'] = abs(cor_values).sum()
-                        shift_val['data'] = round(cor_values, 3)
-                        shift_val['shift'] = shift
-                
-                # If nothing is found jump to the next symbol (this would be a good place to add a min length filter)
-                if len(shift_val['data']) == 0:
-                    continue
-
-                # To eliminate choppiness of the value line I plot later, I want to bring
-                # the overnight gaps back in and ffill the nans. I’ll use the original key_df index for this
-                overnight = key_df.copy()
-                overnight['cor'] = shift_val['data']
-                overnight['cor_close'] = cor_df.close
-                overnight = overnight.fillna(method='ffill')
-                overnight = overnight.dropna() # nans if shifted
-
-                # I'll keep the normalized close values of the key and cor symbols so that 
-                # later on I can scan the symbols which have the highest cor with the value line
-                overnight = _normalize(overnight, 'close', 'cor_close')
-
-                # Get list of rows where correlation is above threshold
-                cor_rows = overnight[(abs(overnight.cor) > MIN_CORR)
-                                     &
-                                     (abs(overnight.cor) < .99) # in case it tracks itself
-                                    ].index
-                if len(cor_rows) > 0:
-                    # print(f'cor count for {cor_symbol}:',len(cor_rows),'... shift:', shift_val['shift'])
-                    final_df = _append_result_to_final_df(cor_rows, overnight, key_symbol, cor_symbol, shift_val['shift'], final_df)
-
-
-            # Once all the symbols and spreads have been analyzed, save the data
-            # before continuing on to the next FX major
-            if final_df.empty:
-                continue  
-            
-            final_df = final_df.dropna(subset=[f'*{key_symbol}*'])
-            # print(f'{key_symbol} final df length:', len(final_df))
-            _save_data(key_symbol, tf, final_df)
-
-    # OHLC_CON.close()
-    # CORR_CON.close()
+        # Verify all data was retrieved
+        if len(cor_of_all_cor_symbols) < len(trading_symbols):
+            print(' ~~~ data request issues inside the scan_correlations function ~~~ ')
+            # print(f" ~~~ missing {set(cor_db.keys()) ^ set(trading_symbols)}") # (a | b) - (a & b), the union of both sets minus the intersection
 
 if __name__ == '__main__':
-    find_correlations(historical_fill=False)
+
+    s = time.time()
+    # _find_correlation('EURUSD', 'GBPUSD', _make_db(), 555, .5)
     
-    # while True:
-    #     find_correlations(historical_fill=False)
-    #     time.sleep(60 * 30) 
+    # 93,600 candles is about 1 year of trading data for M5 candles
+    scan_correlations(mt5_symbols['majors'], mt5_symbols['others'] + spreads, hist_candles=51840)
+    print('minutes elapsed:', (time.time() - s)/60)
+
+
+
+
+
