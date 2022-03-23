@@ -179,21 +179,6 @@ class Symbol():
         
         return trade_signal
 
-    def close_expired_orders(self, side:str) -> None:
-        """ track open orders and close any whose TPs 
-        have been hit before getting filled"""
-
-        # Or if price has moved too far away without a fill
-        if side == 'buy':
-            if self.bid >= self.tp:
-                # self.cancel_order_(order, instr_id)
-                print(f"{self.str_symbol} order expired (by price)")
-
-        if side == 'sell':
-            if self.ask <= self.tp:
-                # self.cancel_order_(order, instr_id)
-                print(f"{self.str_symbol} order expired (by price)")
-
     def set_entry_tp_sl(self, side:str):
         
         if side == 'buy':
@@ -204,7 +189,7 @@ class Symbol():
                 self.tp = self.bid + self.tp_mult * self.d1_ohlc.vol.iloc[-1]
                 self.sl = self.ask - self.sl_mult * self.d1_ohlc.vol.iloc[-1]
             
-            self.entry = price = bid - 10 * min_tick
+            self.entry = self.bid
 
         if side == 'sell':
             if self.d1_ohlc.vol.iloc[-1] > 0.07 * self.ask:
@@ -213,13 +198,16 @@ class Symbol():
             else:
                 self.tp = self.ask - self.tp_mult * self.d1_ohlc.vo.ilocl[-1]
                 self.sl = self.bid + self.sl_mult * self.d1_ohlc.vol.iloc[-1]
-        
+
+            self.entry = self.ask
+
         if (self.tp or self.sl) == 0:
-            print(self.str_symbol,"sl and/or tp == 0. you got problems")
+            print(self.name,"sl and/or tp == 0. you got problems")
 
     def update_symbol_info(self):
         """spread, open orders, positions, w/e"""
 
+        self.open_position = mt5.positions_get(symbol=self.name)
         info = mt5.symbol_info(self.name)
 
         self.spread = info['spread'] * info['point']
@@ -229,45 +217,89 @@ class Symbol():
         self.bid = info['bid']
         self.min_lot = info['volume_min']
         self.tick_value = info['trade_tick_value']
-        
-        self.open_position = mt5.positions_get(symbol=self.name)
-        self.open_order = mt5.orders_get(symbol=self.name)
+        self.time = info['time']
 
+    def send_order(self, direction: str):
+        ''' Read from the df of current setups and set lot size based on 
+        the forecast rating for the currencies in the symbol. '''
+
+        # risk, trade_type = _increase_volume_if_forecast(df, i, symbol)
+        type = mt5.ORDER_TYPE_BUY_LIMIT if direction == 'buy' else mt5.ORDER_TYPE_SELL_LIMIT
+
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": self.name,
+            "volume": self.lot_size,
+            "price": self.entry,
+            "sl": self.sl,
+            "tp": self.tp, ### TP 1
+            "deviation": 20,
+            "magic": 234000,
+            "comment": '', 
+            "expiration": self.time + 60, # one minute
+            "type": type,
+            "type_time": mt5.ORDER_TIME_SPECIFIED,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        result = mt5.order_send(request)
+        if result is not None:
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                # bot.send_message(chat_id=446051969, text=f'Entry failed: {self.name} {direction} {result.retcode}')
+                print(f'~~~ order entry error {self.name} {result.retcode}')
+        else:
+            # bot.send_message(chat_id=446051969, text=f'Entry failed: {symbol} {timeframe} {direction}. "result" is None.')
+            print(f'~~~ order entry error {self.name} "result" is none')
+
+    def close_trade(self):
+        if not mt5.Close(self.name):
+            print(f'failed to close {self.name} position.')
+
+    def set_lot_size(self, direction:str, entry_price: float, sl: float) -> float:
+        ''' Automatically set lot size based on desired risk %.
+        Enter the risk % as a whole number ie 1% risk would be 1. '''
+
+        risk = 0.01  # -> percentage
+
+        # get the distance from entry to sl
+        if direction == 'buy':
+            distance = round(entry_price - sl, self.digits)
+        if direction == 'sell':
+            distance = round(sl - entry_price, self.digits)
+
+        # Convert distance into number of points
+        distance = round(distance / self.point, self.digits)
+
+        # trade_tick_value gives the value for a standard lot for 1 point (min_tick) increment
+        loss_with_1_lot = distance * self.tick_value
+        risk_per_trade = risk * mt5.account_info().equity
+        
+        self.lot_size = round(risk_per_trade / loss_with_1_lot, 2)
 
     def spread_is_ok(self):
 
         if self.spread <= self.m1_ohlc[self.m1_ohlc.index.max(), 'atr'] * 1.25:
             return True
-        else:
-            return False
 
     def check_for_crossover(self):
         """If tp/sl is hit, or if there has been a crossover close the trade.
         This is executed in the on_bid_level_update callback"""
         
-        pos = mt5.positions_get(symbol=self.str_symbol)
-
         # return if no position on that instrument
-        if not pos:
+        if not self.open_position:
             return True 
 
         cross_long = self.grad_h4.iloc[-1] > 0 and self.grad_h4.iloc[-2] <= 0
         cross_short = self.grad_h4.iloc[-1] < 0 and self.grad_h4.iloc[-2] >= 0
 
         reason = None
-        if pos > 0 and cross_short:
-            print(self.str_symbol, 'closing long because crossover')
-            print('did you actually close order?')
-            ########################################
-            ########################################
-            ########################################
+        if self.open_position[0]['volume'] > 0 and cross_short:
+            print(self.name, 'closing long because crossover')
+            self.close_trade()
         
-        if pos < 0 and cross_long:
-            print(self.str_symbol, 'closing short because crossover')
-            print('did you actually close order?')
-            ########################################
-            ########################################
-            ########################################
+        if self.open_position[0]['volume'] < 0 and cross_long:
+            print(self.name, 'closing short because crossover')
+            self.close_trade()
 
 # Init classes
 EURUSD = Symbol('EURUSD')
@@ -348,74 +380,6 @@ pairs = [
     USTEC
 ]
 
-def enter_trade(df, i, symbol, timeframe, risk:float, suffix:str=None):
-    ''' Read from the df of current setups and set lot size based on 
-    the forecast rating for the currencies in the symbol. '''
-
-    if suffix:
-        symbol = symbol + suffix
-
-    # risk, trade_type = _increase_volume_if_forecast(df, i, symbol)
-    direction = 'buy' if not pd.isnull(df.loc[i, 'buy_entry']) else 'sell'
-    type = mt5.ORDER_TYPE_BUY_STOP if direction == 'buy' else mt5.ORDER_TYPE_SELL_STOP
-    type = mt5.ORDER_TYPE_SELL_LIMIT if direction == 'buy' else mt5.ORDER_TYPE_BUY_LIMIT
-    
-    info = _request_symbol_info(symbol)
-    digits = info['digits']
-    spread = info['spread'] * info['point']
-
-    # Add a little space to the order because many are too close to price
-    if direction == 'buy':
-        df.loc[i, f'{direction}_entry'] += spread
-    else:
-        df.loc[i, f'{direction}_entry'] -= spread
-
-    lot_size = _set_lot_size(risk, df, i, direction, info)
-    lot_size = 0.02 #########
-    expiry = _set_expiration(timeframe, info)
-
-    request_1 = {
-        "action": mt5.TRADE_ACTION_PENDING,
-        "symbol": symbol,
-        "volume": lot_size,
-        "price": round(df.loc[i, f'{direction}_entry'], digits),
-        "sl": round(df.loc[i, 'sl'], digits),
-        "tp": round(df.loc[i, 'tp'],  digits), ### TP 1
-        "deviation": 20,
-        "magic": 234000,
-        "comment": df.loc[i, 'pattern'] + '_' + timeframe, 
-        "expiration": expiry,
-        "type": type,
-        "type_time": mt5.ORDER_TIME_SPECIFIED,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-                                                                                                                       
-    # send a trading request
-    mt5.order_send(request_1)
-    # mt5.order_send(request_2)
-
-
-def set_lot_size(self, direction:str, entry_price: float, sl: float) -> float:
-    ''' Automatically set lot size based on desired risk %.
-    Enter the risk % as a whole number ie 1% risk would be 1. '''
-
-    risk = 0.01  # -> percentage
-
-    # get the distance from entry to sl
-    if direction == 'buy':
-        distance = round(entry_price - sl, self.digits)
-    if direction == 'sell':
-        distance = round(sl - entry_price, self.digits)
-
-    # Convert distance into number of points
-    distance = round(distance / self.point, self.digits)
-
-    # trade_tick_value gives the value for a standard lot for 1 point (min_tick) increment
-    loss_with_1_lot = distance * self.tick_value
-    risk_per_trade = risk * mt5.account_info().equity
-    lot_size = round(risk_per_trade / loss_with_1_lot, 2)
-
-    return lot_size
     
 if datetime.now().second == 0:
     for pair in pairs:
@@ -430,9 +394,9 @@ if datetime.now().second == 0:
             pair.check_for_crossover()
                         
         # Get data2
-        pair.m1_ohlc = pair.mt5_ohlc_request(pair.str_symbol, mt5.TIMEFRAME_M1)
-        pair.h4_ohlc = pair.mt5_ohlc_request(pair.str_symbol, mt5.TIMEFRAME_H4)
-        pair.d1_ohlc = pair.mt5_ohlc_request(pair.str_symbol, mt5.TIMEFRAME_D1)
+        pair.m1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_M1)
+        pair.h4_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_H4)
+        pair.d1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_D1)
 
         pair.set_volatility()
 
@@ -656,36 +620,6 @@ def check_for_close_conditions(grad_h4):
         # can export results later
         print('closed trade because', reason)
         
-def enter_trade(df, i, symbol, timeframe):
-    ''' Read from the df of current setups and set lot size based on 
-    the forecast rating for the currencies in the symbol. '''
-
-    risk, trade_type = _increase_volume_if_forecast(df, i, symbol)
-
-    lot_size = _lot_size(risk, df, i, symbol)
-    lot_size *= 0.1 ############ too big
-    lot_size = round(lot_size, 2)
-
-    expiration = _expiration(timeframe)
-
-    request_1 = {
-    "action": mt5.TRADE_ACTION_PENDING,
-    "symbol": symbol,
-    "volume": lot_size,
-    "type": trade_type,
-    "price": df.loc[i, 'entry'],
-    "sl": df.loc[i, 'sl'],
-    "tp": df.loc[i, 'tp1'],  ### TP 1
-    "deviation": 20,
-    "magic": 234000,
-    "comment": f"{df.loc[i, 'pattern']} {timeframe}",
-    "type_time": mt5.ORDER_TIME_DAY,
-    "type_filling": mt5.ORDER_FILLING_FOK,
-    }
-                                          
-    # send a trading request
-    trade = mt5.order_send(request_1)
-
 
 
 
