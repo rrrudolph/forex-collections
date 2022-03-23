@@ -4,11 +4,19 @@ import numpy as np
 import telegram
 from datetime import datetime
 import time
+from enum import Enum
 
 bot = telegram.Bot(token='1777249819:AAGiRaYqHVTCwYZMGkjEv6guQ1g3NN9LOGo')
-mt5_login = ''
-mt5_server = ''
-mt5_pass = ''
+
+
+class Volatility(Enum):
+    high = 1
+    low = 0
+
+class Side(Enum):
+    buy = 1
+    sell = 2
+    
 
 class Symbol():
     def __init__(self, symbol:str):
@@ -17,12 +25,12 @@ class Symbol():
 
         self.cusum_threshold_h = 0.225
         self.cusum_threshold_l = 0.125        
-        self.grad_h4 = pd.Series()
-        self.grad_d1 = pd.Series()
+        self.grad_h4 = pd.Series(dtype=np.float64)
+        self.grad_d1 = pd.Series(dtype=np.float64)
         self.d1_ohlc = pd.DataFrame()
         self.h4_ohlc = pd.DataFrame()
         self.m1_ohlc = pd.DataFrame()
-        self.volatility = ''
+        self.volatility = Volatility
         self.tp_mult = 0.65
         self.sl_mult = 0.65
 
@@ -64,29 +72,20 @@ class Symbol():
 
         return df
 
-    def mt5_ohlc_request(self, symbol, timeframe, num_candles=140):
+    def mt5_ohlc_request(self, symbol, timeframe, num_candles=150):
         ''' Get a formatted df from MT5 '''
-
-        # A request to MT5 can occasionally fail. Retry a few times to connect 
-        # and a few more times to receive data
-        for _ in range(2):
-            if mt5.initialize(login=mt5_login, server=mt5_server,password=mt5_pass):
                 
-                for _ in range(5):
-                    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)  
-                    if rates is not None:
-                        if len(rates) > 0:
-                            df = pd.DataFrame(rates)
-                            df = self._format_mt5_data(df)
-                            return df
+        for _ in range(5):
+            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles)  
+            if rates is not None:
+                if len(rates) > 0:
+                    df = pd.DataFrame(rates)
+                    df = self._format_mt5_data(df)
+                    return df
 
-                print(f'\n ~~~ Request to MT5 failed. [{symbol} {timeframe}] ~~~')
-                return
-            
-            # If init failed pause before retry
-            time.sleep(0.1)
+        print(f'\n ~~~ Request to MT5 failed. [{symbol} {timeframe}] ~~~')
+        return
 
-        print("MT5 initialize() failed, error code =", mt5.last_error())
 
     def set_volatility(self) -> None:
         """ Calculate and add the volatility column to self.d1_ohlc """
@@ -157,11 +156,11 @@ class Symbol():
             self.cusum_pos_l = 1
             self.pos_tick_l = 0
         
-    def get_signal(self):
+    def get_signal(self) -> Side:
         
         trade_signal = None
 
-        if self.volatility == 'high':
+        if self.volatility == Volatility.high:
             cusum_pos = self.cusum_pos_h
             cusum_neg = self.cusum_neg_h
 
@@ -171,17 +170,17 @@ class Symbol():
 
         # cusum negative signal, i.e dip && gradient3 4hour bias is Positive + gradient3 daily bias is Positive
         if cusum_neg == 1 and self.grad_h4.iloc[-1] > 0 and self.grad_d1.iloc[-1] > 0:
-            trade_signal = 'buy'
+            trade_signal = Side.buy
 
         # cusum positive signal, i.e rally && gradient3 4hour bias is negative + gradient3 daily bias is negative
         elif cusum_pos == 1 and self.grad_h4.iloc[-1] < 0 and self.grad_d1.iloc[-1] < 0:
-            trade_signal = 'sell'
+            trade_signal = Side.sell
         
         return trade_signal
 
-    def set_entry_tp_sl(self, side:str):
+    def set_entry_tp_sl(self, side: Side):
         
-        if side == 'buy':
+        if side == Side.buy:
             if self.d1_ohlc.vol.iloc[-1] > 0.07 * self.bid:
                 self.tp = self.bid + self.tp_mult * self.d1_ohlc.vol.iloc[-1]
                 self.sl = 0.93 * self.ask
@@ -191,7 +190,7 @@ class Symbol():
             
             self.entry = self.bid
 
-        if side == 'sell':
+        if side == Side.sell:
             if self.d1_ohlc.vol.iloc[-1] > 0.07 * self.ask:
                 self.tp = self.ask - self.tp_mult * self.d1_ohlc.vol.iloc[-1]
                 self.sl = 1.07 * self.bid
@@ -207,8 +206,11 @@ class Symbol():
     def update_symbol_info(self):
         """spread, open orders, positions, w/e"""
 
-        self.open_position = mt5.positions_get(symbol=self.name)
-        info = mt5.symbol_info(self.name)
+        position = mt5.positions_get(symbol=self.name)
+        if position:
+            self.open_position = position.type
+
+        info = mt5.symbol_info(self.name)._asdict()
 
         self.spread = info['spread'] * info['point']
         self.point = info['point']
@@ -219,12 +221,12 @@ class Symbol():
         self.tick_value = info['trade_tick_value']
         self.time = info['time']
 
-    def send_order(self, direction: str):
+    def send_order(self, direction: Side):
         ''' Read from the df of current setups and set lot size based on 
         the forecast rating for the currencies in the symbol. '''
 
         # risk, trade_type = _increase_volume_if_forecast(df, i, symbol)
-        type = mt5.ORDER_TYPE_BUY_LIMIT if direction == 'buy' else mt5.ORDER_TYPE_SELL_LIMIT
+        type = mt5.ORDER_TYPE_BUY_LIMIT if direction == Side.buy else mt5.ORDER_TYPE_SELL_LIMIT
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -255,17 +257,17 @@ class Symbol():
         if not mt5.Close(self.name):
             print(f'failed to close {self.name} position.')
 
-    def set_lot_size(self, direction:str, entry_price: float, sl: float) -> float:
+    def set_lot_size(self, direction: Side) -> float:
         ''' Automatically set lot size based on desired risk %.
         Enter the risk % as a whole number ie 1% risk would be 1. '''
 
-        risk = 0.01  # -> percentage
+        risk = 0.01  # percentage
 
         # get the distance from entry to sl
-        if direction == 'buy':
-            distance = round(entry_price - sl, self.digits)
-        if direction == 'sell':
-            distance = round(sl - entry_price, self.digits)
+        if direction == Side.buy:
+            distance = round(self.entry_price - self.sl, self.digits)
+        if direction == Side.sell:
+            distance = round(self.sl - self.entry_price, self.digits)
 
         # Convert distance into number of points
         distance = round(distance / self.point, self.digits)
@@ -291,55 +293,56 @@ class Symbol():
 
         cross_long = self.grad_h4.iloc[-1] > 0 and self.grad_h4.iloc[-2] <= 0
         cross_short = self.grad_h4.iloc[-1] < 0 and self.grad_h4.iloc[-2] >= 0
-
-        reason = None
-        if self.open_position[0]['volume'] > 0 and cross_short:
+        
+        if self.open_position == mt5.POSITION_TYPE_BUY and cross_short:
             print(self.name, 'closing long because crossover')
             self.close_trade()
         
-        if self.open_position[0]['volume'] < 0 and cross_long:
+        if self.open_position == mt5.POSITION_TYPE_SELL and cross_long:
             print(self.name, 'closing short because crossover')
             self.close_trade()
+        
+        return False
 
 # Init classes
-EURUSD = Symbol('EURUSD')
-GBPUSD = Symbol('GBPUSD')
-USDCHF = Symbol('USDCHF')
-USDJPY = Symbol('USDJPY')
-USDCAD = Symbol('USDCAD')
-AUDUSD = Symbol('AUDUSD')
-AUDNZD = Symbol('AUDNZD')
-AUDCAD = Symbol('AUDCAD')
-AUDCHF = Symbol('AUDCHF')
-AUDJPY = Symbol('AUDJPY')
-CHFJPY = Symbol('CHFJPY')
-EURGBP = Symbol('EURGBP')
-EURAUD = Symbol('EURAUD')
-EURCHF = Symbol('EURCHF')
-EURJPY = Symbol('EURJPY')
-EURNZD = Symbol('EURNZD')
-EURCAD = Symbol('EURCAD')
-GBPCHF = Symbol('GBPCHF')
-GBPJPY = Symbol('GBPJPY')
-CADCHF = Symbol('CADCHF')
-CADJPY = Symbol('CADJPY')
-GBPCAD = Symbol('GBPCAD')
-GBPNZD = Symbol('GBPNZD')
-NZDCAD = Symbol('NZDCAD')
-NZDCHF = Symbol('NZDCHF')
-NZDJPY = Symbol('NZDJPY')
-NZDUSD = Symbol('NZDUSD')
-BTCUSD = Symbol('BTCUSD')
-BCHUSD = Symbol('BCHUSD')
-ETHUSD = Symbol('ETHUSD')
-LTCUSD = Symbol('LTCUSD')
-XNGUSD = Symbol('XNGUSD')
-XAGUSD = Symbol('XAGUSD')
-XAUUSD = Symbol('XAUUSD')
-DE30 = Symbol('DE30')
-US30 = Symbol('US30')
-US500 = Symbol('US500')
-USTEC = Symbol('USTEC')
+EURUSD = Symbol('EURUSD.a')
+GBPUSD = Symbol('GBPUSD.a')
+USDCHF = Symbol('USDCHF.a')
+USDJPY = Symbol('USDJPY.a')
+USDCAD = Symbol('USDCAD.a')
+AUDUSD = Symbol('AUDUSD.a')
+AUDNZD = Symbol('AUDNZD.a')
+AUDCAD = Symbol('AUDCAD.a')
+AUDCHF = Symbol('AUDCHF.a')
+AUDJPY = Symbol('AUDJPY.a')
+CHFJPY = Symbol('CHFJPY.a')
+EURGBP = Symbol('EURGBP.a')
+EURAUD = Symbol('EURAUD.a')
+EURCHF = Symbol('EURCHF.a')
+EURJPY = Symbol('EURJPY.a')
+EURNZD = Symbol('EURNZD.a')
+EURCAD = Symbol('EURCAD.a')
+GBPCHF = Symbol('GBPCHF.a')
+GBPJPY = Symbol('GBPJPY.a')
+CADCHF = Symbol('CADCHF.a')
+CADJPY = Symbol('CADJPY.a')
+GBPCAD = Symbol('GBPCAD.a')
+GBPNZD = Symbol('GBPNZD.a')
+NZDCAD = Symbol('NZDCAD.a')
+NZDCHF = Symbol('NZDCHF.a')
+NZDJPY = Symbol('NZDJPY.a')
+NZDUSD = Symbol('NZDUSD.a')
+BTCUSD = Symbol('BTCUSD.a')
+BCHUSD = Symbol('BCHUSD.a')
+ETHUSD = Symbol('ETHUSD.a')
+LTCUSD = Symbol('LTCUSD.a')
+XNGUSD = Symbol('XNGUSD.a')
+XAGUSD = Symbol('XAGUSD.a')
+XAUUSD = Symbol('XAUUSD.a')
+DE30 = Symbol('DE30.a')
+US30 = Symbol('US30.a')
+US500 = Symbol('US500.a')
+USTEC = Symbol('USTEC.a')
 
 pairs = [
     EURUSD, GBPUSD, USDCHF,
@@ -377,259 +380,107 @@ pairs = [
     DE30,
     US30,
     US500,
-    USTEC
+    USTEC,
 ]
 
-    
-if datetime.now().second == 0:
+def on_start():
+    """init indi values"""
     for pair in pairs:
-
-        pair.update_symbol_info()
-
-        # Cancel any unfilled orders
-        if len(pair.open_order) > 0:
-            pass
-            # close pair.open_order.ticket
-        if len(pair.open_position) > 0:
-            pair.check_for_crossover()
-                        
-        # Get data2
+        
         pair.m1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_M1)
         pair.h4_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_H4)
         pair.d1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_D1)
-
         pair.set_volatility()
-
         vol, rolling_vol = pair.d1_ohlc.vol.iloc[-1], pair.d1_ohlc.rolling_vol.iloc[-1]
-        if (not vol or not rolling_vol) or vol <= rolling_vol:
-            pair.volatility = 'low'
+        if vol <= rolling_vol:
+            pair.volatility = Volatility.low
             pair.grad_h4 = pair.get_third_deriv(pair.h4_ohlc.close, 11)
             pair.grad_d1 = pair.get_third_deriv(pair.d1_ohlc.close, 11)
         else:
-            pair.volatility = 'high'
+            pair.volatility = Volatility.high
             pair.grad_h4 = pair.get_third_deriv(pair.h4_ohlc.close, 9)
             pair.grad_d1 = pair.get_third_deriv(pair.d1_ohlc.close, 9)
 
         pair.get_cusum()
 
-        if not pair.spread_is_ok():
-            print(f"spread {pair.spread} too high on", pair.name)
-            continue
+def main():
 
-        signal = pair.get_signal()
-        if not signal:
-            continue
+    current_time = datetime.now()
+    if current_time.second == 0:
+        for pair in pairs:
 
-        pair.set_entry_tp_sl(signal)
-        pos_size = pair.set_lot_size(signal, )
-
-            # Check current position on this symbol
-            if instrument_id in pair.positions_by_id: 
-                pos = pair.positions_by_id[instrument_id].pos
-            else:
-                pos = 0
+            pair.update_symbol_info()
             
-            pair.env_.publish_telegram(f"""!!! trade signal: {mlt_symbol} {signal}\n
-                                       current positions: {repr(pair.positions_by_id)}""")
+            if len(pair.open_position) > 0:
+                if not pair.check_for_crossover():
+                    # open position not closed so skip to next pair
+                    continue
+                            
+            # Get data2
+            pair.m1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_M1)
+            
+            # only update the h4 values every 10mins, d1 every 30mins
+            if current_time.minute % 10 == 0:
+                pair.h4_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_H4)
+                pair.get_cusum()
 
-            # No need to check for current opposing position (like gradient3 does)
-            # as a crossover condition will have already closed the trade
-            if signal == 'buy':  
-                pair.env_.publish_telegram("signal confirmed as "buy" - checking if current pos > 0"
-                # Verify no long position exists
-                if pos > 0:
-                    pair.env_.publish_telegram(f"""Pos: {pos} is > 0. Can't open a second
-                                               trade in the same direction.""")
-                    return True
+            if current_time.minute % 30 == 0:
+                pair.d1_ohlc = pair.mt5_ohlc_request(pair.name, mt5.TIMEFRAME_D1)
+                pair.set_volatility()
 
-                tp_sl = {'tp': tp, 'sl': sl}
-
-                pair.log_.info("-------- OPENING LONG -------")
-                ask = pair.BBO_by_id[instrument_id]['ask']
-                price = ask + 10 * min_tick
-
-                pair.send_order_(instrument, Side.Buy, price, Qty.from_int(pos), f'opening {mlt_symbol} long',
-                                 instrument.get_exchange(), instrument_id, attachment=tp_sl,
-                                 )
-
-            if signal == 'sell':   
-                pair.env_.publish_telegram("signal confirmed as "sell" - checking if current pos < 0" 
-                # Verify no long position exists
-                if pos < 0:
-                    pair.env_.publish_telegram(f"""Pos: {pos} is < 0. Can't open a second
-                                               trade in the same direction.""")
-                    return True
-
-                tp, sl = pair.get_tp_sl(Side.Sell, instrument_id)
-                tp_sl = {'tp': tp, 'sl': sl}
-                
-                pair.log_.info("-------- OPENING SHORT -------")
-                bid = pair.BBO_by_id[instrument_id]['bid']
-                price = bid - 10 * min_tick
-                self.send_order_(instrument, Side.Sell, price, Qty.from_int(pos), f'opening {mlt_symbol} short',
-                                 instrument.get_exchange(), instrument_id, attachment=tp_sl,
-                                 )
-        return True
+                vol, rolling_vol = pair.d1_ohlc.vol.iloc[-1], pair.d1_ohlc.rolling_vol.iloc[-1]
+                if vol <= rolling_vol:
+                    pair.volatility = Volatility.low
+                    pair.grad_h4 = pair.get_third_deriv(pair.h4_ohlc.close, 11)
+                    pair.grad_d1 = pair.get_third_deriv(pair.d1_ohlc.close, 11)
+                else:
+                    pair.volatility = Volatility.high
+                    pair.grad_h4 = pair.get_third_deriv(pair.h4_ohlc.close, 9)
+                    pair.grad_d1 = pair.get_third_deriv(pair.d1_ohlc.close, 9)
 
 
+            if not pair.spread_is_ok():
+                print(f"spread {pair.spread} too high on", pair.name)
+                continue
 
+            signal = pair.get_signal()
+            if not signal:
+                continue
 
-def get_third_deriv(series: pd.Series, ema_period: int) -> pd.Series:
-    """ Calculate gradients and return a smoothed series of the third deriv """
+            pair.set_entry_tp_sl(signal)
+            pair.set_lot_size(signal)
+            
+            if signal == Side.buy:
+                pair.send_order(Side.buy)
 
-    ma = series.ewm(span=ema_period, adjust=False).mean()
-    # Calculate slope
-    ma_dydx = ma.diff() * 10000
-    # Normalize
-    ma_dydx = ma_dydx / series
+            if signal == Side.sell:
+                pair.send_order(Side.sell)
 
-    # Smooth gradients of ema's by taking ema of gradients
-    ma_smooth = ma_dydx.ewm(span=ema_period, adjust=False).mean() * 10000
-
-    # Calculate 2nd deriv from the smoothed gradient
-    ma_2 = ma_smooth.diff()
-    ma2_smooth = ma_2.ewm(span=ema_period, adjust=False).mean()
-
-    # Calculate 3rd deriv from the smoothed gradient
-    ma_3 = ma2_smooth.diff()
-    ma3_smooth = ma_3.ewm(span=ema_period, adjust=False).mean()
-
-    return ma3_smooth
-
-def get_signal(m1_ohlc, d1_ohlc):
-    global pos_tick_h, pos_tick_l, neg_tick_h, neg_tick_l
-
-    # First reset the signals
-    cusum_neg_h = 0
-    cusum_neg_l = 0
-    cusum_pos_h = 0
-    cusum_pos_l = 0
-    trade_signal = None
-    
-
-    price_diff = m1_ohlc.close.diff().iloc[-1]
-    vol = d1_ohlc.vol.iloc[-1]
-
-    if price_diff > 0:
-        pos_tick_l += price_diff
-        pos_tick_h += price_diff
-
-    elif price_diff < 0:
-        neg_tick_l += price_diff
-        neg_tick_h += price_diff
-
-    if neg_tick_h < - cusum_threshold_h * vol:
-        cusum_neg_h = 1
-        neg_tick_h = 0
-
-    if neg_tick_l < - cusum_threshold_l * vol:
-        cusum_neg_l = 1
-        neg_tick_l = 0
-
-    if pos_tick_h > cusum_threshold_h * vol:
-        cusum_pos_h = 1
-        pos_tick_h = 0
-
-    if pos_tick_h > cusum_threshold_l * vol:
-        cusum_pos_l = 1
-        pos_tick_l = 0
-
-    # get signal
-    if volatility == 'high':
-        cusum_pos = cusum_pos_h
-        cusum_neg = cusum_neg_h
-
-    else:
-        cusum_pos = cusum_pos_l
-        cusum_neg = cusum_neg_l
-
-    # cusum negative signal, i.e dip && gradient3 4hour bias is Positive + gradient3 daily bias is Positive
-    if cusum_neg == 1 and grad_h4.iloc[-1] > 0 and grad_d1.iloc[-1] > 0:
-        trade_signal = 'buy'
-
-    # cusum positive signal, i.e rally && gradient3 4hour bias is negative + gradient3 daily bias is negative
-    elif cusum_pos == 1 and grad_h4.iloc[-1] < 0 and grad_d1.iloc[-1] < 0:
-        trade_signal = 'sell'
-    
-    if trade_signal:
-        # log the last few rows of indicator data to telegram
-        print('trade signal', trade_signal)
-
-        return trade_signal
-
-def get_tp_sl(side: str, symbol, d1_ohlc) -> list:
-    
-    if side == 'buy':
-        if d1_ohlc.vol.iloc[-1] > 0.07 * bid:
-            tp = bid + tp_mult * d1_ohlc.vol.iloc[-1]
-            sl = 0.93 * ask
+def connect():
+    for _ in range(3):
+        if not mt5.initialize():
+            print("initialize() failed, error code =",mt5.last_error())
+            quit()
         else:
-            tp = bid + tp_mult * d1_ohlc.vol.iloc[-1]
-            sl = ask - sl_mult * d1_ohlc.vol.iloc[-1]
+            break
 
-    elif side == 'sell':
-        if d1_ohlc.vol.iloc[-1] > 0.07 * ask:
-            tp = ask - tp_mult * d1_ohlc.vol.iloc[-1]
-            sl = 1.07 * bid
+    authorized=mt5.login('50821307', password='5ZpgiBmt')  # the terminal database password is applied if connection data is set to be remembered
+    
+    for _ in range(3):
+        if authorized:
+            print("connected")
+            break
         else:
-            tp = ask - tp_mult * d1_ohlc.vo.ilocl[-1]
-            sl = bid + sl_mult * d1_ohlc.vol.iloc[-1]
-    
-    return tp, sl
+            print("failed to connect")
+            time.sleep(1)
 
-def check_for_close_conditions(grad_h4):
-    # return if no position on that instrument
+if __name__ == '__main__':
 
-    cross_long = grad_h4.iloc[-1] > 0 and grad_h4.iloc[-2] <= 0
-    cross_short = grad_h4.iloc[-1] < 0 and grad_h4.iloc[-2] >= 0
-    
-    pos = mt5.positions_get(symbol="SYMBOL")
-    
-    if pos == None:
-        return
-    # pos.type = 1 is sell               
-    # pos.type = 0 is buy 
-                  
-    if pos['type'] == 0:
-
-        if bid >= pos['tp']:
-            reason = 'TP'
-        if bid <= pos['sl']:
-            reason = 'SL'
-        if cross_short:
-            reason = 'CROSSOVER'
-
-        if reason:
-            # close
-            pass
-
-    elif pos['type'] == 1:
-
-        if ask <= pos['tp']:
-            reason = 'TP'
-        if ask >= pos['sl']:
-            reason = 'SL'
-        if cross_long:
-            reason = 'CROSSOVER'
-
-        if reason:    
-            # close
-            pass
-    
-    if reason:
-        # can export results later
-        print('closed trade because', reason)
-        
+ 
+    connect()
+    on_start()
+    while True:
+        main()
 
 
 
-for symbol in symbols:
-    # for timeframe in etf_to_htf:
-    for timeframe in ['M5']:
-        if symbol in indexes:
-            df = pd.read_parquet(Path(INDEXES_PATH, f'temp_{symbol}.parquet'))
-            df = _resample(df, timeframe)
-        else:
-            # df = _resample(df, timeframe)
-            # print(df.index)
-            df = mt5_ohlc_request(symbol, timeframe, num_candles=300)
